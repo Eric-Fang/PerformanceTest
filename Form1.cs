@@ -8,17 +8,41 @@ using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 
-using System.Threading;
-
 using Microsoft.SharePoint;
+
+// References:
+// http://blog.dotnetstep.in/2009/01/batch-update-in-sharepoint.html
+// http://www.codeproject.com/Articles/29813/Parallel-Computations-in-C
 
 namespace PerformanceTest
 {
     public partial class Form1 : Form
     {
-        private string _ListNamePerformanceTest = @"PerformanceTest";
+        public const string _ListNamePerformanceTest = @"PerformanceTest";
+        public const string _FieldName_1 = @"TextField1";
+        public const string _FieldName_2 = @"TextField2";
+        public const string _FieldName_3 = @"TextField3";
+        public const string _FieldName_4 = @"TextField4";
+        public const string _FieldName_5 = @"TextField5";
+        public const string _FieldPrefix = @"urn:schemas-microsoft-com:office:office#";
+
         DateTime _PerformanceStartTime = DateTime.MinValue;
         DateTime _PerformanceEndTime = DateTime.MinValue;
+
+        private void writeLogDot()
+        {
+            //if (maskedTextBoxThreadNumber.Text == "1")
+            //{
+            //    textBoxPerformanceLog.Text = "." + textBoxPerformanceLog.Text;
+            //    Application.DoEvents();
+            //}
+        }
+
+        private void writeLog(string strLog)
+        {
+            textBoxPerformanceLog.Text = string.Format("{2}{0} - {1}{3}", DateTime.Now.ToString("hh:mm:ss"), strLog, Environment.NewLine, textBoxPerformanceLog.Text);
+            Application.DoEvents();
+        }
 
         public Form1()
         {
@@ -35,21 +59,6 @@ namespace PerformanceTest
             {
                 ;
             }
-        }
-
-        private void writeLogDot()
-        {
-            //if (maskedTextBoxThreadNumber.Text == "1")
-            //{
-            //    textBoxPerformanceLog.Text = "." + textBoxPerformanceLog.Text;
-            //    Application.DoEvents();
-            //}
-        }
-
-        private void writeLog(string strLog)
-        {
-            textBoxPerformanceLog.Text = string.Format("{2}{0} - {1}{3}", DateTime.Now.ToString("hh:mm:ss"), strLog, Environment.NewLine, textBoxPerformanceLog.Text);
-            Application.DoEvents();
         }
 
         private int PerformanceGetRowNumber()
@@ -78,6 +87,24 @@ namespace PerformanceTest
                     }
                 }
             }
+        }
+
+        private int GetStartID()
+        {
+            int iReturnID = -1;
+            using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
+            {
+                using (SPWeb objSPWeb = objSPSite.OpenWeb())
+                {
+                    SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
+                    if (objSPListPerformanceTest != null)
+                    {
+                        iReturnID = objSPListPerformanceTest.Items[0].ID;
+                    }
+                }
+            }
+
+            return iReturnID;
         }
 
         private void PerformanceCalculate(DateTime objStart, DateTime objEnd, int iRowNumber)
@@ -152,22 +179,32 @@ namespace PerformanceTest
                         SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
                         if (objSPListPerformanceTest != null)
                         {
-                            writeLog(@"Delete existing list (" + _ListNamePerformanceTest + ") begin...");
-                            Application.DoEvents();
+                            writeLog(@"Deleting existing list (" + _ListNamePerformanceTest + ") begin...");
+                            
                             objSPListPerformanceTest.Delete();
-                            writeLog(@"...complete.");
+                            writeLog(@"...completed.");
                         }
-                        writeLog(@"create list (" + _ListNamePerformanceTest + ") begin...");
-                        Application.DoEvents();
+                        writeLog(@"Creating list (" + _ListNamePerformanceTest + ") begin...");
+                        
                         Guid newGuid = objSPWeb.Lists.Add(_ListNamePerformanceTest, _ListNamePerformanceTest, SPListTemplateType.GenericList);
                         SPList objSPList = objSPWeb.Lists[newGuid];
-                        objSPList.Fields.Add("TextField1", SPFieldType.Text, false);
-                        objSPList.Fields.Add("TextField2", SPFieldType.Text, false);
-                        objSPList.Fields.Add("TextField3", SPFieldType.Text, false);
-                        objSPList.Fields.Add("TextField4", SPFieldType.Text, false);
-                        objSPList.Fields.Add("TextField5", SPFieldType.Text, false);
+                        objSPList.Fields.Add(_FieldName_1, SPFieldType.Text, false);
+                        objSPList.Fields.Add(_FieldName_2, SPFieldType.Text, false);
+                        objSPList.Fields.Add(_FieldName_3, SPFieldType.Text, false);
+                        objSPList.Fields.Add(_FieldName_4, SPFieldType.Text, false);
+                        objSPList.Fields.Add(_FieldName_5, SPFieldType.Text, false);
+                        objSPList.EnableAttachments = false;
                         objSPList.Update();
-                        writeLog(@"...complete");
+
+                        SPView view = objSPList.DefaultView;
+                        view.ViewFields.Add(_FieldName_1);
+                        view.ViewFields.Add("ID");
+                        //view.ViewFields.Add("Created");
+                        //view.ViewFields.Add("Modified");
+                        view.RowLimit = 2000;
+                        view.Update();
+
+                        writeLog(@"...completed");
                     }
                 }
 
@@ -184,8 +221,18 @@ namespace PerformanceTest
             }
         }
 
-        public void insertSPListItemBatch()
+        public int insertSPListItemBatch(int iThreadId)
         {
+            int iRowNumber = PerformanceGetRowNumber();
+            if (iRowNumber < 0)
+            {
+                writeLog("Cannot insert zero items. Exit.");
+                return 0;
+            }
+
+            string strValue = "insert-" + iThreadId.ToString() + @"-" + DateTime.Now.ToLongTimeString();
+            StringBuilder query = new StringBuilder();
+
             try
             {
                 Cursor.Current = Cursors.WaitCursor;
@@ -195,7 +242,25 @@ namespace PerformanceTest
                     using (SPWeb objSPWeb = objSPSite.OpenWeb())
                     {
                         SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
-                        insertSPListItemBatch(objSPWeb, objSPListPerformanceTest);
+                        Guid strListGUID = objSPListPerformanceTest.ID;
+
+                        for (int i = 0; i < iRowNumber; i++)
+                        {
+                            //string strValue = "insert(" + DateTime.Now.ToLongTimeString() + @"):: " + i.ToString();
+                            query.AppendFormat("<Method ID=\"{0}\">" +
+                                    "<SetList>{1}</SetList>" +
+                                    "<SetVar Name=\"ID\">New</SetVar>" +
+                                    "<SetVar Name=\"Cmd\">Save</SetVar>" +
+                                    "<SetVar Name=\"{3}Title\">{2}</SetVar>" +
+                                    "<SetVar Name=\"{3}TextField1\">{2}</SetVar>" +
+                                    "<SetVar Name=\"{3}TextField2\">{2}</SetVar>" +
+                                    "<SetVar Name=\"{3}TextField3\">{2}</SetVar>" +
+                                    "<SetVar Name=\"{3}TextField4\">{2}</SetVar>" +
+                                    "<SetVar Name=\"{3}TextField5\">{2}</SetVar>" +
+                                 "</Method>", i, strListGUID, strValue, _FieldPrefix);
+                        }
+                        objSPWeb.ProcessBatchData(string.Format("<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
+                            "<ows:Batch OnError=\"Return\">{0}</ows:Batch>", query.ToString()));
                     }
                 }
             }
@@ -205,43 +270,13 @@ namespace PerformanceTest
                 throw;
             }
 
-            //return iRowNumber;
+            return iRowNumber;
         }
 
-        public int insertSPListItemBatch(SPWeb objSPWeb, SPList objSPList)
+        public void insertSPListItemSingle(int iThreadId)
         {
             int iRowNumber = PerformanceGetRowNumber();
-            if (iRowNumber < 0)
-            {
-                writeLog("No data found. Insert exit.");
-                return 0;
-            }
-
-            StringBuilder query = new StringBuilder();
-            Guid guidListID = objSPList.ID;
-            for (int i = 0; i < iRowNumber; i++)
-            {
-                //string strValue = "insert(" + DateTime.Now.ToLongTimeString() + @"):: " + i.ToString();
-                query.AppendFormat("<Method ID=\"{0}\">" +
-                        "<SetList>{1}</SetList>" +
-                        "<SetVar Name=\"ID\">New</SetVar>" +
-                        "<SetVar Name=\"Cmd\">Save</SetVar>" +
-                        "<SetVar Name=\"{3}TextField1\">{2}</SetVar>" +
-                        "<SetVar Name=\"{3}TextField2\">{2}</SetVar>" +
-                        "<SetVar Name=\"{3}TextField3\">{2}</SetVar>" +
-                        "<SetVar Name=\"{3}TextField4\">{2}</SetVar>" +
-                        "<SetVar Name=\"{3}TextField5\">{2}</SetVar>" +
-                     "</Method>", i, guidListID, "strValue", "urn:schemas-microsoft-com:office:office#");
-            }
-            objSPWeb.ProcessBatchData(string.Format("<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
-                "<ows:Batch OnError=\"Return\">{0}</ows:Batch>", query.ToString()));
-
-            return 0;
-        }
-
-        public void insertSPListItemSingle()
-        {
-            int iRowNumber = PerformanceGetRowNumber();
+            string strValue = "insert-" + iThreadId.ToString() + @"-" + DateTime.Now.ToLongTimeString();
 
             using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
             {
@@ -254,12 +289,12 @@ namespace PerformanceTest
                     for (int i = 0; i < iRowNumber; i++)
                     {
                         objSPListItem = objSPListPerformanceTest.AddItem();
-                        string strValue = "insert(" + DateTime.Now.ToLongTimeString() + @"):: " + i.ToString();
-                        objSPListItem["TextField1"] = strValue;
-                        objSPListItem["TextField2"] = strValue;
-                        objSPListItem["TextField3"] = strValue;
-                        objSPListItem["TextField4"] = strValue;
-                        objSPListItem["TextField5"] = strValue;
+                        objSPListItem[SPBuiltInFieldId.Title] = strValue;
+                        objSPListItem[_FieldName_1] = strValue;
+                        objSPListItem[_FieldName_2] = strValue;
+                        objSPListItem[_FieldName_3] = strValue;
+                        objSPListItem[_FieldName_4] = strValue;
+                        objSPListItem[_FieldName_5] = strValue;
                         //objSPListItem.SystemUpdate(false);
                         objSPListItem.Update();
 
@@ -283,14 +318,13 @@ namespace PerformanceTest
             int iRowNumber = PerformanceGetRowNumber();
             if (iRowNumber < 0)
             {
-                writeLog("No data found. Insert exit.");
+                writeLog("Cannot insert zero items. Exit.");
                 return;
             }
 
             _PerformanceStartTime = DateTime.Now;
-            writeLog(string.Format(@"Insert {0} rows begin at {1}), in {2} threads...",
+            writeLog(string.Format(@"Insert {0} rows, begin at {1}), in {2} threads...",
                 iRowNumber, _PerformanceStartTime.ToLongTimeString(), iThreadNumber));
-            Application.DoEvents();
 
             try
             {
@@ -300,11 +334,11 @@ namespace PerformanceTest
                 {
                     if (boolBatch)
                     {
-                        insertSPListItemBatch();
+                        insertSPListItemBatch(i);
                     }
                     else
                     {
-                        insertSPListItemSingle();
+                        insertSPListItemSingle(i);
                     }
                 });
 
@@ -312,7 +346,7 @@ namespace PerformanceTest
 
                 PerformanceRefreshRowCount();
                 _PerformanceEndTime = DateTime.Now;
-                writeLog(@"Complete(" + _PerformanceEndTime.ToLongTimeString() + @")");
+                writeLog(string.Format(@"Insert completed at {0}, {1} rows get inserted.", _PerformanceEndTime.ToLongTimeString(), iRowNumber));
                 PerformanceCalculate(_PerformanceStartTime, _PerformanceEndTime, iRowNumber);
 
                 RefreshStatus();
@@ -328,57 +362,84 @@ namespace PerformanceTest
             }
         }
 
+        public int retrieveSPListItemSingle(int iThreadId)
+        {
+            int iBatchCount = PerformanceGetRowNumber();
+            if (iBatchCount <= 0)
+            {
+                writeLog("Cannot retrieve zero items. Exit.");
+                return -1;
+            }
+
+            int iPositionStart = iBatchCount * iThreadId;
+            int iPositionEnd = iBatchCount * (iThreadId + 1);
+            int iMethodId = 0;
+            string strValue = string.Empty;
+
+            using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
+            {
+                using (SPWeb objSPWeb = objSPSite.OpenWeb())
+                {
+                    SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
+                    SPListItemCollection objSPListItemCollection = objSPListPerformanceTest.Items;
+                    SPListItem objSPListItem = null;
+                    if (iPositionEnd > objSPListPerformanceTest.ItemCount)
+                        iPositionEnd = objSPListPerformanceTest.ItemCount;
+                    if (iPositionEnd < iPositionStart)
+                    {
+                        return 0;
+                    }
+
+                    for (int i = iPositionStart; i < iPositionEnd; i++)
+                    {
+                        iMethodId++;
+                        objSPListItem = objSPListItemCollection[i];
+
+                        strValue = objSPListItem[_FieldName_1].ToString();
+                        strValue += objSPListItem[_FieldName_2].ToString();
+                        strValue += objSPListItem[_FieldName_3].ToString();
+                        strValue += objSPListItem[_FieldName_4].ToString();
+                        strValue += objSPListItem[_FieldName_5].ToString();
+                    }
+                }
+            }
+
+            return iMethodId;
+        }
+
         private void buttonPerformanceRetrieve_Click(object sender, EventArgs e)
         {
             if (false == checkBoxPerformanceExist.Checked) return;
+
+            int iThreadNumber = int.Parse(maskedTextBoxThreadNumber.Text);
+            bool boolBatch = checkBoxBatch.Checked;
 
             //textBoxPerformanceLog.Text = string.Empty;
             int iRowNumber = PerformanceGetRowNumber();
             if (iRowNumber <= 0)
             {
-                writeLog("No data found. Retrieve exit.");
+                writeLog("Cannot retrieve zero items. Exit.");
                 return;
             }
 
             _PerformanceStartTime = DateTime.Now;
-            writeLog(@"Retrieve " + maskedTextBoxPerformanceRowNumber.Text + " rows begin(" + _PerformanceStartTime.ToLongTimeString() + @")...");
-            Application.DoEvents();
-
+            writeLog(@"Retrieve (single mode only) " + maskedTextBoxPerformanceRowNumber.Text + " rows begin(" + _PerformanceStartTime.ToLongTimeString() + @")...");
+            
             try
             {
                 Cursor.Current = Cursors.WaitCursor;
 
-                using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
+                AForge.Parallel.For(0, iThreadNumber, delegate(int i)
                 {
-                    using (SPWeb objSPWeb = objSPSite.OpenWeb())
-                    {
-                        SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
-                        SPListItemCollection objSPListItemCollection = objSPListPerformanceTest.Items;
-                        if (iRowNumber > objSPListItemCollection.Count) iRowNumber = objSPListItemCollection.Count;
-                        int i = 1;
-                        foreach (SPListItem objSPListItem in objSPListItemCollection)
-                        {
-                            string strValue = "retrieve(" + DateTime.Now.ToLongTimeString() + @"):: " + i.ToString();
-                            i++;
-                            strValue = objSPListItem["TextField1"].ToString();
-                            strValue += objSPListItem["TextField2"].ToString();
-                            strValue += objSPListItem["TextField3"].ToString();
-                            strValue += objSPListItem["TextField4"].ToString();
-                            strValue += objSPListItem["TextField5"].ToString();
+                    retrieveSPListItemSingle(i);
+                });
 
-                            if (i % 100 == 0)
-                            {
-                                writeLogDot();
-                                Application.DoEvents();
-                            }
-                        }
+                iRowNumber *= iThreadNumber;
 
-                        PerformanceRefreshRowCount();
-                        _PerformanceEndTime = DateTime.Now;
-                        writeLog(@"Complete(" + _PerformanceEndTime.ToLongTimeString() + @")");
-                        PerformanceCalculate(_PerformanceStartTime, _PerformanceEndTime, iRowNumber);
-                    }
-                }
+                PerformanceRefreshRowCount();
+                _PerformanceEndTime = DateTime.Now;
+                writeLog(string.Format(@"Retrieve completed at {0}, {1} rows get retrieved.", _PerformanceEndTime.ToLongTimeString(), iRowNumber));
+                PerformanceCalculate(_PerformanceStartTime, _PerformanceEndTime, iRowNumber);
             }
             catch (Exception ex)
             {
@@ -389,6 +450,119 @@ namespace PerformanceTest
             {
                 Cursor.Current = Cursors.Arrow;
             }
+        }
+
+        public int updateSPListItemBatch(int iThreadId, int iStartID)
+        {
+            int iBatchCount = PerformanceGetRowNumber();
+            if (iBatchCount <= 0)
+            {
+                writeLog("Cannot update zero items. Exit.");
+                return -1;
+            }
+
+            int iPositionStart = iBatchCount * iThreadId;
+            int iPositionEnd = iBatchCount * (iThreadId + 1);
+            int iMethodId = 0;
+            string strValue = "update-" + iThreadId.ToString() + @"-" + DateTime.Now.ToLongTimeString();
+
+            StringBuilder sbDelete = new StringBuilder();
+            sbDelete.Append("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Batch>");
+
+            using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
+            {
+                using (SPWeb objSPWeb = objSPSite.OpenWeb())
+                {
+                    SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
+                    SPListItemCollection objSPListItemCollection = objSPListPerformanceTest.Items;
+                    string strListGUID = objSPListItemCollection.List.ID.ToString();
+                    if (iPositionEnd > objSPListPerformanceTest.ItemCount)
+                        iPositionEnd = objSPListPerformanceTest.ItemCount;
+                    if (iPositionEnd < iPositionStart)
+                    {
+                        return 0;
+                    }
+
+                    for (int i = iPositionStart; i < iPositionEnd; i++)
+                    {
+                        iMethodId++;
+                        sbDelete.AppendFormat("<Method ID=\"{0}\">" +
+                            "<SetList>{1}</SetList>" +
+                            "<SetVar Name=\"ID\">{2}</SetVar>" +
+                            "<SetVar Name=\"Cmd\">Update</SetVar>" +
+                            "<SetVar Name=\"{4}TextField1\">{3}</SetVar>" +
+                            "<SetVar Name=\"{4}TextField2\">{3}</SetVar>" +
+                            "<SetVar Name=\"{4}TextField3\">{3}</SetVar>" +
+                            "<SetVar Name=\"{4}TextField4\">{3}</SetVar>" +
+                            "<SetVar Name=\"{4}TextField5\">{3}</SetVar>" +
+                            "</Method>", iMethodId, strListGUID, iStartID + i, strValue, _FieldPrefix);
+                    }
+
+                    sbDelete.Append("</Batch>");
+
+                    try
+                    {
+                        objSPWeb.ProcessBatchData(sbDelete.ToString());
+                    }
+                    catch (Exception ex)
+                    {
+                        writeLog("updateSPListItemBatch, Delete failed: " + ex.Message);
+                        throw;
+                    }
+                }
+            }
+
+            return iMethodId;
+        }
+
+        public int updateSPListItemSingle(int iThreadId, int iStartID)
+        {
+            int iBatchCount = PerformanceGetRowNumber();
+            if (iBatchCount <= 0)
+            {
+                writeLog("Cannot update zero items. Exit.");
+                return -1;
+            }
+
+            int iPositionStart = iBatchCount * iThreadId;
+            int iPositionEnd = iBatchCount * (iThreadId + 1);
+            int iMethodId = 0;
+            string strValue = "update-" + iThreadId.ToString() + @"-" + DateTime.Now.ToLongTimeString();
+
+            using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
+            {
+                using (SPWeb objSPWeb = objSPSite.OpenWeb())
+                {
+                    SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
+                    SPListItemCollection objSPListItemCollection = objSPListPerformanceTest.Items;
+                    SPListItem objSPListItem = null;
+                    if (iPositionEnd > objSPListPerformanceTest.ItemCount)
+                        iPositionEnd = objSPListPerformanceTest.ItemCount;
+                    if (iPositionEnd < iPositionStart)
+                    {
+                        return 0;
+                    }
+
+                    for (int i = iPositionStart; i < iPositionEnd; i++)
+                    {
+                        iMethodId++;
+                        objSPListItem = objSPListPerformanceTest.GetItemById(iStartID + i);
+                        objSPListItem[_FieldName_1] = strValue;
+                        objSPListItem[_FieldName_2] = strValue;
+                        objSPListItem[_FieldName_3] = strValue;
+                        objSPListItem[_FieldName_4] = strValue;
+                        objSPListItem[_FieldName_5] = strValue;
+                        objSPListItem.SystemUpdate(false);
+
+                        //if (i % 100 == 0)
+                        //{
+                        //    writeLogDot();
+                        //}
+                    }
+                }
+            }
+
+            return iMethodId;
         }
 
         private void buttonPerformanceUpdate_Click(object sender, EventArgs e)
@@ -403,46 +577,37 @@ namespace PerformanceTest
                 return;
             }
 
+            int iThreadNumber = int.Parse(maskedTextBoxThreadNumber.Text);
+            bool boolBatch = checkBoxBatch.Checked;
+
             _PerformanceStartTime = DateTime.Now;
-            writeLog(@"Update " + maskedTextBoxPerformanceRowNumber.Text + " rows begin(" + _PerformanceStartTime.ToLongTimeString() + @")...");
-            Application.DoEvents();
+            writeLog(string.Format(@"Update {0} rows, begin at {1}), in {2} threads...",
+                iRowNumber, _PerformanceStartTime.ToLongTimeString(), iThreadNumber));
 
             try
             {
                 Cursor.Current = Cursors.WaitCursor;
 
-                using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
+                int iStartID = GetStartID();
+
+                AForge.Parallel.For(0, iThreadNumber, delegate(int i)
                 {
-                    using (SPWeb objSPWeb = objSPSite.OpenWeb())
+                    if (boolBatch)
                     {
-                        SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
-                        SPListItemCollection objSPListItemCollection = objSPListPerformanceTest.Items;
-                        if (iRowNumber > objSPListItemCollection.Count) iRowNumber = objSPListItemCollection.Count;
-                        int i = 1;
-                        foreach (SPListItem objSPListItem in objSPListItemCollection)
-                        {
-                            string strValue = "update(" + DateTime.Now.ToLongTimeString() + @"):: " + i.ToString();
-                            i++;
-                            objSPListItem["TextField1"] = strValue;
-                            objSPListItem["TextField2"] = strValue;
-                            objSPListItem["TextField3"] = strValue;
-                            objSPListItem["TextField4"] = strValue;
-                            objSPListItem["TextField5"] = strValue;
-                            objSPListItem.SystemUpdate(false);
-
-                            if (i % 100 == 0)
-                            {
-                                writeLogDot();
-                                Application.DoEvents();
-                            }
-                        }
-
-                        PerformanceRefreshRowCount();
-                        _PerformanceEndTime = DateTime.Now;
-                        writeLog(@"Complete(" + _PerformanceEndTime.ToLongTimeString() + @")");
-                        PerformanceCalculate(_PerformanceStartTime, _PerformanceEndTime, iRowNumber);
+                        iRowNumber = updateSPListItemBatch(i, iStartID);
                     }
-                }
+                    else
+                    {
+                        iRowNumber = updateSPListItemSingle(i, iStartID);
+                    }
+                });
+
+                iRowNumber *= iThreadNumber;
+
+                PerformanceRefreshRowCount();
+                _PerformanceEndTime = DateTime.Now;
+                writeLog(string.Format(@"Update completed at {0}, {1} rows get updated.", _PerformanceEndTime.ToLongTimeString(), iRowNumber));
+                PerformanceCalculate(_PerformanceStartTime, _PerformanceEndTime, iRowNumber);
             }
             catch (Exception ex)
             {
@@ -455,92 +620,155 @@ namespace PerformanceTest
             }
         }
 
-        public int deleteSPListItemBatch(SPWeb objSPWeb, SPListItemCollection objSPListItemCollection)
+        public int deleteSPListItemBatch(int iThreadId, int iStartID)
         {
-            int iCount = 0;
+            int iBatchCount = PerformanceGetRowNumber();
+            if (iBatchCount <= 0)
+            {
+                writeLog("Cannot delete zero items. Exit.");
+                return -1;
+            }
+
+            int iPositionStart = iBatchCount * iThreadId;
+            int iPositionEnd = iBatchCount * (iThreadId + 1);
+            int iMethodId = 0;
+
             StringBuilder sbDelete = new StringBuilder();
             sbDelete.Append("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Batch>");
 
-            string strListGUID = objSPListItemCollection.List.ID.ToString();
-
-            foreach (SPListItem item in objSPListItemCollection)
+            using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
             {
-                sbDelete.Append("<Method>");
-                sbDelete.Append("<SetList Scope=\"Request\">" + strListGUID + "</SetList>");
-                sbDelete.Append("<SetVar Name=\"ID\">" + Convert.ToString(item.ID) + "</SetVar>");
-                sbDelete.Append("<SetVar Name=\"Cmd\">Delete</SetVar>");
-                sbDelete.Append("</Method>");
-                iCount++;
+                using (SPWeb objSPWeb = objSPSite.OpenWeb())
+                {
+                    SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
+                    SPListItemCollection objSPListItemCollection = objSPListPerformanceTest.Items;
+                    string strListGUID = objSPListItemCollection.List.ID.ToString();
+
+                    if (iPositionEnd > objSPListPerformanceTest.ItemCount)
+                        iPositionEnd = objSPListPerformanceTest.ItemCount;
+                    if (iPositionEnd < iPositionStart)
+                    {
+                        return 0;
+                    }
+
+                    try
+                    {
+                        for (int i = iPositionStart; i < iPositionEnd; i++)
+                        {
+                            iMethodId++;
+                            sbDelete.Append("<Method>");
+                            sbDelete.Append("<SetList Scope=\"Request\">" + strListGUID + "</SetList>");
+                            sbDelete.Append("<SetVar Name=\"ID\">" + Convert.ToString(iStartID + i) + "</SetVar>");
+                            sbDelete.Append("<SetVar Name=\"Cmd\">Delete</SetVar>");
+                            sbDelete.Append("</Method>");
+                        }
+
+                        sbDelete.Append("</Batch>");
+                    }
+                    catch (Exception)
+                    {
+                        
+                        throw;
+                    }
+
+                    try
+                    {
+                        objSPWeb.ProcessBatchData(sbDelete.ToString());
+                    }
+                    catch (Exception ex)
+                    {
+                        writeLog("deleteSPListItemBatch, Delete failed: " + ex.Message);
+                        throw;
+                    }
+                }
             }
 
-            sbDelete.Append("</Batch>");
+            return iMethodId;
+        }
 
-            try
+        public int deleteSPListItemSingle(int iThreadId, int iStartID)
+        {
+            int iBatchCount = PerformanceGetRowNumber();
+            if (iBatchCount <= 0)
             {
-                objSPWeb.ProcessBatchData(sbDelete.ToString());
-            }
-            catch (Exception ex)
-            {
-                writeLog("deleteSPListItemBatch, Delete failed: " + ex.Message);
-                throw;
-            }
-            finally
-            {
-                objSPWeb.Dispose();
+                writeLog("Cannot delete zero items. Exit.");
+                return -1;
             }
 
-            return iCount;
+            int iPositionStart = iBatchCount * iThreadId;
+            int iPositionEnd = iBatchCount * (iThreadId + 1);
+            int iMethodId = 0;
+
+            using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
+            {
+                using (SPWeb objSPWeb = objSPSite.OpenWeb())
+                {
+                    SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
+                    //SPListItemCollection objSPListItemCollection = objSPListPerformanceTest.Items;
+                    if (iPositionEnd > objSPListPerformanceTest.ItemCount)
+                        iPositionEnd = objSPListPerformanceTest.ItemCount;
+                    if (iPositionEnd < iPositionStart)
+                    {
+                        return 0;
+                    }
+
+                    try
+                    {
+                        for (int i = iPositionStart; i < iPositionEnd; i++)
+                        {
+                            iMethodId++;
+                            objSPListPerformanceTest.GetItemById(iStartID + i).Delete();
+                        }
+                    }
+                    catch (Exception)
+                    {
+                        
+                        throw;
+                    }
+                }
+            }
+
+            return iMethodId;
         }
 
         private void buttonPerformanceDelete_Click(object sender, EventArgs e)
         {
+            int iRowNumber = 0;
             if (false == checkBoxPerformanceExist.Checked) return;
 
+            int iThreadNumber = int.Parse(maskedTextBoxThreadNumber.Text);
+            bool boolBatch = checkBoxBatch.Checked;
+
             //textBoxPerformanceLog.Text = string.Empty;
-            int iRowNumber = PerformanceGetRowNumber();
-            if (iRowNumber <= 0)
-            {
-                writeLog("No data found. Update exit.");
-                return;
-            }
 
             _PerformanceStartTime = DateTime.Now;
-            writeLog(@"Delete " + iRowNumber.ToString() + " rows begin(" + _PerformanceStartTime.ToLongTimeString() + @")...");
-            Application.DoEvents();
+            writeLog(string.Format(@"Delete {0} rows, begin at {1}), in {2} threads...",
+                iRowNumber, _PerformanceStartTime.ToLongTimeString(), iThreadNumber));
 
             try
             {
                 Cursor.Current = Cursors.WaitCursor;
 
-                using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
+                int iStartID = GetStartID();
+
+                AForge.Parallel.For(0, iThreadNumber, delegate(int i)
                 {
-                    using (SPWeb objSPWeb = objSPSite.OpenWeb())
+                    if (boolBatch)
                     {
-                        SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
-                        SPListItemCollection objSPListItemCollection = objSPListPerformanceTest.Items;
-                        iRowNumber = objSPListItemCollection.Count;
-
-                        if (checkBoxBatch.Checked)
-                            deleteSPListItemBatch(objSPWeb, objSPListItemCollection);
-                        else
-                        {
-                            for (int i = iRowNumber - 1; i >= 0; i--)
-                            {
-                                objSPListItemCollection.Delete(i);
-
-                                if (i % 100 == 0)
-                                {
-                                    writeLogDot();
-                                }
-                            }
-                        }
-
-                        PerformanceRefreshRowCount();
-                        _PerformanceEndTime = DateTime.Now;
-                        writeLog(@"Complete(" + _PerformanceEndTime.ToLongTimeString() + @")");
-                        PerformanceCalculate(_PerformanceStartTime, _PerformanceEndTime, iRowNumber);
+                        iRowNumber = deleteSPListItemBatch(i, iStartID);
                     }
-                }
+                    else
+                    {
+                        iRowNumber = deleteSPListItemSingle(i, iStartID);
+                    }
+                });
+
+                iRowNumber *= iThreadNumber;
+
+                PerformanceRefreshRowCount();
+                _PerformanceEndTime = DateTime.Now;
+                writeLog(string.Format(@"Delete completed at {0}, {1} rows get deleted.", _PerformanceEndTime.ToLongTimeString(), iRowNumber));
+                PerformanceCalculate(_PerformanceStartTime, _PerformanceEndTime, iRowNumber);
 
                 RefreshStatus();
             }
@@ -585,6 +813,5 @@ namespace PerformanceTest
         {
             textBoxPerformanceLog.Text = string.Empty;
         }
-
     }
 }

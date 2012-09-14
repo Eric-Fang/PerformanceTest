@@ -239,7 +239,7 @@
             this.maskedTextBoxThreadNumber.RightToLeft = System.Windows.Forms.RightToLeft.Yes;
             this.maskedTextBoxThreadNumber.Size = new System.Drawing.Size(43, 20);
             this.maskedTextBoxThreadNumber.TabIndex = 45;
-            this.maskedTextBoxThreadNumber.Text = "4";
+            this.maskedTextBoxThreadNumber.Text = "1";
             this.maskedTextBoxThreadNumber.ValidatingType = typeof(int);
             // 
             // label1
