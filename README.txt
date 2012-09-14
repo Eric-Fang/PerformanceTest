@@ -1,4 +1,4 @@
-The tool is used to test SharePoint data access performance.
+The windows form program is to test SharePoint data access performance.
 
 A test list "PerformanceTest" will be created in specified SharePoint site. It contains 5 "single-line text" fields.
 

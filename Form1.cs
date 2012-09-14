@@ -64,7 +64,7 @@ namespace PerformanceTest
         private int PerformanceGetRowNumber()
         {
             int iRowNumber = int.MinValue;
-            int.TryParse(maskedTextBoxPerformanceRowNumber.Text, out iRowNumber);
+            int.TryParse(textBoxPerformanceRowNumber.Text, out iRowNumber);
 
             return iRowNumber;
         }
@@ -194,6 +194,7 @@ namespace PerformanceTest
                         objSPList.Fields.Add(_FieldName_4, SPFieldType.Text, false);
                         objSPList.Fields.Add(_FieldName_5, SPFieldType.Text, false);
                         objSPList.EnableAttachments = false;
+                        objSPList.OnQuickLaunch = true;
                         objSPList.Update();
 
                         SPView view = objSPList.DefaultView;
@@ -202,6 +203,8 @@ namespace PerformanceTest
                         //view.ViewFields.Add("Created");
                         //view.ViewFields.Add("Modified");
                         view.RowLimit = 2000;
+                        view.Aggregations = "<FieldRef Name='ID' Type='COUNT'/>";
+                        view.AggregationsStatus = "On";
                         view.Update();
 
                         writeLog(@"...completed");
@@ -298,10 +301,10 @@ namespace PerformanceTest
                         //objSPListItem.SystemUpdate(false);
                         objSPListItem.Update();
 
-                        if (i % 100 == 0)
-                        {
-                            writeLogDot();
-                        }
+                        //if (i % 100 == 0)
+                        //{
+                        //    writeLogDot();
+                        //}
                     }
                 }
             }
@@ -423,7 +426,7 @@ namespace PerformanceTest
             }
 
             _PerformanceStartTime = DateTime.Now;
-            writeLog(@"Retrieve (single mode only) " + maskedTextBoxPerformanceRowNumber.Text + " rows begin(" + _PerformanceStartTime.ToLongTimeString() + @")...");
+            writeLog(@"Retrieve (single mode only) " + textBoxPerformanceRowNumber.Text + " rows begin(" + _PerformanceStartTime.ToLongTimeString() + @")...");
             
             try
             {
