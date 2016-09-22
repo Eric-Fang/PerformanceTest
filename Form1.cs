@@ -40,7 +40,14 @@ namespace PerformanceTest
 
         private void writeLog(string strLog)
         {
-            textBoxPerformanceLog.Text = string.Format("{2}{0} - {1}{3}", DateTime.Now.ToString("hh:mm:ss"), strLog, Environment.NewLine, textBoxPerformanceLog.Text);
+            if (string.IsNullOrEmpty(strLog))
+            {
+                textBoxPerformanceLog.Text = Environment.NewLine + textBoxPerformanceLog.Text;
+            }
+            else
+            {
+                textBoxPerformanceLog.Text = string.Format("{2}{0} - {1}{3}", DateTime.Now.ToString("hh:mm:ss"), strLog, Environment.NewLine, textBoxPerformanceLog.Text);
+            }
             Application.DoEvents();
         }
 
@@ -121,6 +128,7 @@ namespace PerformanceTest
                 double doublePerformance = (double)(iRowNumber * 1000) / objTimeSpan.TotalMilliseconds;
                 strTmp = string.Format(@"StartTime:{0}, EndTime:{1}, RowNumber:{2}, Performance:{3} (rows/second), TimeSpan:{4} seconds", objStart.ToLongTimeString(), objEnd.ToLongTimeString(), iRowNumber, doublePerformance.ToString("0.00"), objTimeSpan.TotalSeconds.ToString("0.00"));
                 writeLog(strBatch + strTmp);
+                writeLog(string.Empty);
             }
         }
 
@@ -132,6 +140,10 @@ namespace PerformanceTest
             {
                 Cursor.Current = Cursors.WaitCursor;
 
+                if (textBoxSiteURL.Text.Contains(@"{local}"))
+                {
+                    textBoxSiteURL.Text = textBoxSiteURL.Text.Replace(@"{local}", Environment.MachineName);
+                }
                 using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
                 {
                     using (SPWeb objSPWeb = objSPSite.OpenWeb())
@@ -143,15 +155,10 @@ namespace PerformanceTest
                             boolExists = false;
 
                         checkBoxPerformanceExist.Checked = boolExists;
-                        buttonPerformanceInsert.Enabled = boolExists;
-                        buttonPerformanceDelete.Enabled = boolExists;
-                        buttonPerformanceUpdate.Enabled = boolExists;
-                        buttonPerformanceAll.Enabled = boolExists;
                         if (boolExists)
                             textBoxPerformanceRowCount.Text = objSPListPerformanceTest.ItemCount.ToString();
                         else
                             textBoxPerformanceRowCount.Text = @"0";
-
                     }
                 }
             }
@@ -183,6 +190,7 @@ namespace PerformanceTest
                             
                             objSPListPerformanceTest.Delete();
                             writeLog(@"...completed.");
+                            writeLog(string.Empty);
                         }
                         writeLog(@"Creating list (" + _ListNamePerformanceTest + ") begin...");
                         
@@ -207,7 +215,8 @@ namespace PerformanceTest
                         view.AggregationsStatus = "On";
                         view.Update();
 
-                        writeLog(@"...completed");
+                        writeLog(@"...completed.");
+                        writeLog(string.Empty);
                     }
                 }
 
@@ -327,11 +336,12 @@ namespace PerformanceTest
 
             _PerformanceStartTime = DateTime.Now;
             writeLog(string.Format(@"Insert {0} rows, begin at {1}), in {2} threads...",
-                iRowNumber, _PerformanceStartTime.ToLongTimeString(), iThreadNumber));
+                iRowNumber * iThreadNumber, _PerformanceStartTime.ToLongTimeString(), iThreadNumber));
 
             try
             {
                 Cursor.Current = Cursors.WaitCursor;
+                buttonPerformanceInsert.Enabled = false;
 
                 AForge.Parallel.For(0, iThreadNumber, delegate(int i)
                 {
@@ -361,6 +371,7 @@ namespace PerformanceTest
             }
             finally
             {
+                buttonPerformanceInsert.Enabled = true;
                 Cursor.Current = Cursors.Arrow;
             }
         }
@@ -431,6 +442,7 @@ namespace PerformanceTest
             try
             {
                 Cursor.Current = Cursors.WaitCursor;
+                buttonPerformanceRetrieve.Enabled = false;
 
                 AForge.Parallel.For(0, iThreadNumber, delegate(int i)
                 {
@@ -451,6 +463,7 @@ namespace PerformanceTest
             }
             finally
             {
+                buttonPerformanceRetrieve.Enabled = true;
                 Cursor.Current = Cursors.Arrow;
             }
         }
@@ -585,11 +598,12 @@ namespace PerformanceTest
 
             _PerformanceStartTime = DateTime.Now;
             writeLog(string.Format(@"Update {0} rows, begin at {1}), in {2} threads...",
-                iRowNumber, _PerformanceStartTime.ToLongTimeString(), iThreadNumber));
+                iRowNumber * iThreadNumber, _PerformanceStartTime.ToLongTimeString(), iThreadNumber));
 
             try
             {
                 Cursor.Current = Cursors.WaitCursor;
+                buttonPerformanceUpdate.Enabled = false;
 
                 int iStartID = GetStartID();
 
@@ -597,11 +611,11 @@ namespace PerformanceTest
                 {
                     if (boolBatch)
                     {
-                        iRowNumber = updateSPListItemBatch(i, iStartID);
+                        updateSPListItemBatch(i, iStartID);
                     }
                     else
                     {
-                        iRowNumber = updateSPListItemSingle(i, iStartID);
+                        updateSPListItemSingle(i, iStartID);
                     }
                 });
 
@@ -619,6 +633,7 @@ namespace PerformanceTest
             }
             finally
             {
+                buttonPerformanceUpdate.Enabled = true;
                 Cursor.Current = Cursors.Arrow;
             }
         }
@@ -736,7 +751,7 @@ namespace PerformanceTest
 
         private void buttonPerformanceDelete_Click(object sender, EventArgs e)
         {
-            int iRowNumber = 0;
+            int iRowNumber = PerformanceGetRowNumber();
             if (false == checkBoxPerformanceExist.Checked) return;
 
             int iThreadNumber = int.Parse(maskedTextBoxThreadNumber.Text);
@@ -746,11 +761,12 @@ namespace PerformanceTest
 
             _PerformanceStartTime = DateTime.Now;
             writeLog(string.Format(@"Delete {0} rows, begin at {1}), in {2} threads...",
-                iRowNumber, _PerformanceStartTime.ToLongTimeString(), iThreadNumber));
+                iRowNumber * iThreadNumber, _PerformanceStartTime.ToLongTimeString(), iThreadNumber));
 
             try
             {
                 Cursor.Current = Cursors.WaitCursor;
+                buttonPerformanceDelete.Enabled = false;
 
                 int iStartID = GetStartID();
 
@@ -758,11 +774,11 @@ namespace PerformanceTest
                 {
                     if (boolBatch)
                     {
-                        iRowNumber = deleteSPListItemBatch(i, iStartID);
+                        deleteSPListItemBatch(i, iStartID);
                     }
                     else
                     {
-                        iRowNumber = deleteSPListItemSingle(i, iStartID);
+                        deleteSPListItemSingle(i, iStartID);
                     }
                 });
 
@@ -782,6 +798,7 @@ namespace PerformanceTest
             }
             finally
             {
+                buttonPerformanceDelete.Enabled = true;
                 Cursor.Current = Cursors.Arrow;
             }
         }
@@ -815,6 +832,21 @@ namespace PerformanceTest
         private void buttonClearLog_Click(object sender, EventArgs e)
         {
             textBoxPerformanceLog.Text = string.Empty;
+        }
+
+        private void textBoxSiteURL_TextChanged(object sender, EventArgs e)
+        {
+            RefreshStatus();
+        }
+
+        private void checkBoxPerformanceExist_CheckedChanged(object sender, EventArgs e)
+        {
+            bool boolExists = checkBoxPerformanceExist.Checked;
+
+            buttonPerformanceInsert.Enabled = boolExists;
+            buttonPerformanceDelete.Enabled = boolExists;
+            buttonPerformanceUpdate.Enabled = boolExists;
+            buttonPerformanceAll.Enabled = boolExists;
         }
     }
 }

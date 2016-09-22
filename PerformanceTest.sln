@@ -1,6 +1,8 @@
 ﻿
-Microsoft Visual Studio Solution File, Format Version 11.00
-# Visual Studio 2010
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 14
+VisualStudioVersion = 14.0.25420.1
+MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PerformanceTest", "PerformanceTest.csproj", "{39579B6E-8FB4-4125-B17A-29FF1E4C1EED}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "testConsoleApplication1", "testConsoleApplication1\testConsoleApplication1.csproj", "{44016F38-0870-4538-AE96-FAD9C9DA3DBD}"
@@ -13,8 +15,8 @@ Global
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
 		{39579B6E-8FB4-4125-B17A-29FF1E4C1EED}.Debug|x86.ActiveCfg = Debug|x86
 		{39579B6E-8FB4-4125-B17A-29FF1E4C1EED}.Debug|x86.Build.0 = Debug|x86
-		{39579B6E-8FB4-4125-B17A-29FF1E4C1EED}.Release|x86.ActiveCfg = Release|x86
-		{39579B6E-8FB4-4125-B17A-29FF1E4C1EED}.Release|x86.Build.0 = Release|x86
+		{39579B6E-8FB4-4125-B17A-29FF1E4C1EED}.Release|x86.ActiveCfg = Debug|x86
+		{39579B6E-8FB4-4125-B17A-29FF1E4C1EED}.Release|x86.Build.0 = Debug|x86
 		{44016F38-0870-4538-AE96-FAD9C9DA3DBD}.Debug|x86.ActiveCfg = Debug|x86
 		{44016F38-0870-4538-AE96-FAD9C9DA3DBD}.Debug|x86.Build.0 = Debug|x86
 		{44016F38-0870-4538-AE96-FAD9C9DA3DBD}.Release|x86.ActiveCfg = Release|x86

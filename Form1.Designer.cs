@@ -98,6 +98,7 @@
             this.checkBoxPerformanceExist.TabIndex = 35;
             this.checkBoxPerformanceExist.Text = "Exist";
             this.checkBoxPerformanceExist.UseVisualStyleBackColor = true;
+            this.checkBoxPerformanceExist.CheckedChanged += new System.EventHandler(this.checkBoxPerformanceExist_CheckedChanged);
             // 
             // buttonPerformanceUpdate
             // 
@@ -114,9 +115,9 @@
             this.label29.AutoSize = true;
             this.label29.Location = new System.Drawing.Point(13, 81);
             this.label29.Name = "label29";
-            this.label29.Size = new System.Drawing.Size(69, 13);
+            this.label29.Size = new System.Drawing.Size(85, 13);
             this.label29.TabIndex = 33;
-            this.label29.Text = "Row Number";
+            this.label29.Text = "Rows per thread";
             // 
             // buttonPerformanceInsert
             // 
@@ -187,7 +188,8 @@
             this.textBoxSiteURL.Name = "textBoxSiteURL";
             this.textBoxSiteURL.Size = new System.Drawing.Size(824, 20);
             this.textBoxSiteURL.TabIndex = 42;
-            this.textBoxSiteURL.Text = "http://hvsp2010a/SiteDirectory/PT";
+            this.textBoxSiteURL.Text = "http://{local}/sites/sandpit";
+            this.textBoxSiteURL.TextChanged += new System.EventHandler(this.textBoxSiteURL_TextChanged);
             // 
             // labelSiteURL
             // 
@@ -211,7 +213,7 @@
             // checkBoxBatch
             // 
             this.checkBoxBatch.AutoSize = true;
-            this.checkBoxBatch.Location = new System.Drawing.Point(156, 79);
+            this.checkBoxBatch.Location = new System.Drawing.Point(360, 77);
             this.checkBoxBatch.Name = "checkBoxBatch";
             this.checkBoxBatch.Size = new System.Drawing.Size(65, 17);
             this.checkBoxBatch.TabIndex = 44;
@@ -221,8 +223,8 @@
             // maskedTextBoxThreadNumber
             // 
             this.maskedTextBoxThreadNumber.AllowPromptAsInput = false;
-            this.maskedTextBoxThreadNumber.Location = new System.Drawing.Point(322, 77);
-            this.maskedTextBoxThreadNumber.Mask = "0";
+            this.maskedTextBoxThreadNumber.Location = new System.Drawing.Point(272, 75);
+            this.maskedTextBoxThreadNumber.Mask = "00";
             this.maskedTextBoxThreadNumber.Name = "maskedTextBoxThreadNumber";
             this.maskedTextBoxThreadNumber.RightToLeft = System.Windows.Forms.RightToLeft.Yes;
             this.maskedTextBoxThreadNumber.Size = new System.Drawing.Size(43, 20);
@@ -233,7 +235,7 @@
             // label1
             // 
             this.label1.AutoSize = true;
-            this.label1.Location = new System.Drawing.Point(235, 81);
+            this.label1.Location = new System.Drawing.Point(185, 79);
             this.label1.Name = "label1";
             this.label1.Size = new System.Drawing.Size(81, 13);
             this.label1.TabIndex = 46;
@@ -241,7 +243,7 @@
             // 
             // textBoxPerformanceRowNumber
             // 
-            this.textBoxPerformanceRowNumber.Location = new System.Drawing.Point(89, 76);
+            this.textBoxPerformanceRowNumber.Location = new System.Drawing.Point(125, 76);
             this.textBoxPerformanceRowNumber.MaxLength = 4;
             this.textBoxPerformanceRowNumber.Name = "textBoxPerformanceRowNumber";
             this.textBoxPerformanceRowNumber.Size = new System.Drawing.Size(43, 20);
@@ -276,7 +278,7 @@
             this.Controls.Add(this.textBoxPerformanceLog);
             this.Controls.Add(this.buttonPerformanceDelete);
             this.Name = "Form1";
-            this.Text = "SharePoint Data Access Performance Test";
+            this.Text = "SharePoint SOM Data Access Performance Test (by Eric Fang)";
             this.Load += new System.EventHandler(this.Form1_Load);
             this.ResumeLayout(false);
             this.PerformLayout();
