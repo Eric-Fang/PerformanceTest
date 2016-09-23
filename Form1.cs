@@ -29,14 +29,14 @@ namespace PerformanceTest
         DateTime _PerformanceStartTime = DateTime.MinValue;
         DateTime _PerformanceEndTime = DateTime.MinValue;
 
-        private void writeLogDot()
-        {
+        //private void writeLogDot()
+        //{
             //if (maskedTextBoxThreadNumber.Text == "1")
             //{
             //    textBoxPerformanceLog.Text = "." + textBoxPerformanceLog.Text;
             //    Application.DoEvents();
             //}
-        }
+        //}
 
         private void writeLog(string strLog)
         {
