@@ -3,850 +3,1468 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
 using System.Drawing;
+using System.IO;
 using System.Linq;
 using System.Text;
-using System.Threading;
 using System.Windows.Forms;
 
 using Microsoft.SharePoint;
+using Microsoft.SharePoint.Administration;
 
-// References:
-// http://blog.dotnetstep.in/2009/01/batch-update-in-sharepoint.html
-// http://www.codeproject.com/Articles/29813/Parallel-Computations-in-C
-
-namespace PerformanceTest
+namespace SPSiteAdmin2013
 {
     public partial class Form1 : Form
     {
-        public const string _ListNamePerformanceTest = @"PerformanceTest";
-        public const string _FieldName_1 = @"TextField1";
-        public const string _FieldName_2 = @"TextField2";
-        public const string _FieldName_3 = @"TextField3";
-        public const string _FieldName_4 = @"TextField4";
-        public const string _FieldName_5 = @"TextField5";
-        public const string _FieldPrefix = @"urn:schemas-microsoft-com:office:office#";
+        Dictionary<string, string> _dictPSScriptInWebApp = new Dictionary<string, string>();
+        Dictionary<string, string> _dictPSScriptBackup = new Dictionary<string, string>();
+        Dictionary<string, string> _dictPSScriptRestore = new Dictionary<string, string>();
+        Dictionary<string, string> _dictPSScriptCreate = new Dictionary<string, string>();
+        Dictionary<string, string> _dictPSScriptCrossWebApp = new Dictionary<string, string>();
 
-        DateTime _PerformanceStartTime = DateTime.MinValue;
-        DateTime _PerformanceEndTime = DateTime.MinValue;
+        public const string _SPContentDatabase_Tmp = @"SP_Content_Tmp";
+        //site url, database name
+        public const string _PSTemplate_SPSiteMove = @"Move-SPSite -Identity {0} -DestinationDatabase {1} -Confirm:$false";
+        //url, database name, targetUrl
+        public const string _PSTemplate_SPSiteCopy = @"Copy-SPSite -Identity {0} -DestinationDatabase {1} -TargetUrl {2}";
+        //site url, folder, file
+        public const string _PSTemplate_SPSiteBackup = @"Backup-SPSite {0} -Path ""{1}\{2}""";
+        //site url, folder, file, database server, database name
+        public const string _PSTemplate_SPSiteRestore = @"Restore-SPSite -Identity {0} -Path ""{1}\{2}"" -Force -confirm:$false";
+        //public const string _PSTemplate_RestoreSPSite = @"Restore-SPSite -Identity {0} -Path ""{1}\{2}"" -DatabaseServer {3} -DatabaseName {4} -Force";
+        public const string _PSTemplate_SPSiteCreate = @"New-SPSite {0} -OwnerAlias ""{1}"" -Name ""{2}"" -Template ""{3}"" -ContentDatabase {4} -Description ""{5}""";
+        // Remove-SPSite -Identity "<URL>"
+        public const string _PSTemplate_SPSiteRemove = @"Remove-SPSite -Identity {0} -confirm:$false";
+        // Get-SPTimerJob -WebApplication $WebAppUrl job-site-deletion | Start-SPTimerJob
+        public const string _PSTemplate_SPSiteDeletionTimerJob = @"Get-SPTimerJob -WebApplication {0} job-site-deletion | Start-SPTimerJob";
+        // Dismount-SPContentDatabase -Identity "TempContentDatabaseSource" -Confirm:$false
+        public const string _PSTemplate_SPContentDatabaseDismount = @"Dismount-SPContentDatabase -Identity {0} -Confirm:$false";
+        // Mount-SPContentDatabase -AssignNewDatabaseId -Name "SP_Content_SPTest80_HRRecords" -DatabaseServer "sp2013dbDEV" -WebApplication "http://SPTest2013DEV.unitingcare.local"
+        public const string _PSTemplate_SPContentDatabaseMount = @"Mount-SPContentDatabase -AssignNewDatabaseId -Name {0} -DatabaseServer {1} -WebApplication {2}";
+        // $site = Get-SPSite http://sptest2013dev.unitingcare.local/sites/HRRecordsNew
+        public const string _PSTemplate_GetSPSite = @"$site = Get-SPSite {0}";
+        // $site.RecycleBin.DeleteAll()
+        public const string _PSTemplate_SPSite_RecycleBin_DeleteAll = @"$site.RecycleBin.DeleteAll()";
+        // $site.Rename("http://sptest2013dev.unitingcare.local/sites/HRRecords")
+        public const string _PSTemplate_SPSiteRename = @"$site.Rename(""{0}"")";
+        public const string _PSTemplate_SPSiteDispose = @"$site.Dispose()";
+        public const string _PSTemplate_RefreshSitesInConfigurationDatabase = @"$site.ContentDatabase.RefreshSitesInConfigurationDatabase()";
 
-        //private void writeLogDot()
-        //{
-            //if (maskedTextBoxThreadNumber.Text == "1")
-            //{
-            //    textBoxPerformanceLog.Text = "." + textBoxPerformanceLog.Text;
-            //    Application.DoEvents();
-            //}
-        //}
+        public string _SP_SQL_Instance_Name = @"";
 
-        private void writeLog(string strLog)
-        {
-            if (string.IsNullOrEmpty(strLog))
-            {
-                textBoxPerformanceLog.Text = Environment.NewLine + textBoxPerformanceLog.Text;
-            }
-            else
-            {
-                textBoxPerformanceLog.Text = string.Format("{2}{0} - {1}{3}", DateTime.Now.ToString("hh:mm:ss"), strLog, Environment.NewLine, textBoxPerformanceLog.Text);
-            }
-            Application.DoEvents();
-        }
+        DataTable dtRestore = new DataTable();
 
         public Form1()
         {
             InitializeComponent();
         }
 
+        private int GetComboBoxSelectedIndexByValue(ComboBox objComboBox, string strValue)
+        {
+            int iIndex = 0;
+
+            for (int i = 0; i < objComboBox.Items.Count; i++)
+            {
+                if (((KeyValuePair<string, string>)objComboBox.Items[i]).Key.Equals(strValue, StringComparison.InvariantCultureIgnoreCase))
+                {
+                    return i;
+                }
+            }
+
+            return iIndex;
+        }
+
+        private void tabControl1_Selected(object sender, TabControlEventArgs e)
+        {
+            Cursor cursorBackup = Cursor.Current;
+            Cursor.Current = Cursors.WaitCursor;
+
+            if (e.TabPage.Name.Equals(tabPageInWebApp.Name, StringComparison.InvariantCultureIgnoreCase))
+            {
+                initTabInWebApp();
+            }
+            else if (e.TabPage.Name.Equals(tabPageBackup.Name, StringComparison.InvariantCultureIgnoreCase))
+            {
+                initTabBackup();
+            }
+            else if (e.TabPage.Name.Equals(tabPageRestore.Name, StringComparison.InvariantCultureIgnoreCase))
+            {
+                initTabRestore();
+            }
+            else if (e.TabPage.Name.Equals(tabPageCreate.Name, StringComparison.InvariantCultureIgnoreCase))
+            {
+                initTabCreate();
+            }
+            else if (e.TabPage.Name.Equals(tabPageCrossWebApp.Name, StringComparison.InvariantCultureIgnoreCase))
+            {
+                initTabCrossWebApp();
+            }
+
+            textBoxPSScript.Text = string.Empty;
+            Cursor.Current = cursorBackup;
+        }
+
+        private void initTabInWebApp()
+        {
+            string strSPWebAppId = string.Empty;
+            string strSelectedValueWebAppMove = SPSiteAdmin2013.Properties.Settings.Default.InWebApp;
+            string strSelectedValueContentDBSource = SPSiteAdmin2013.Properties.Settings.Default.InWebAppContentDBSource;
+            string strSelectedValueContentDBDest = SPSiteAdmin2013.Properties.Settings.Default.InWebAppContentDBDest;
+
+            comboBoxInWebApp.Items.Clear();
+            foreach (SPWebApplication objSPWebApp in SPWebService.ContentService.WebApplications)
+            {
+                strSPWebAppId = objSPWebApp.Id.ToString();
+
+                comboBoxInWebApp.Items.Add(new KeyValuePair<string, string>(strSPWebAppId, objSPWebApp.Name));
+            }
+
+            comboBoxInWebApp.DisplayMember = "Value";
+            comboBoxInWebApp.ValueMember = "Key";
+            if (string.IsNullOrEmpty(strSelectedValueWebAppMove) == false)
+            {
+                comboBoxInWebApp.SelectedIndex = GetComboBoxSelectedIndexByValue(comboBoxInWebApp, strSelectedValueWebAppMove);
+                comboBoxInWebAppContentDBSource.SelectedIndex = GetComboBoxSelectedIndexByValue(comboBoxInWebAppContentDBSource, strSelectedValueContentDBSource);
+                comboBoxInWebAppContentDBDest.SelectedIndex = GetComboBoxSelectedIndexByValue(comboBoxInWebAppContentDBDest, strSelectedValueContentDBDest);
+            }
+            else
+            {
+                if (comboBoxInWebApp.Items.Count > 0)
+                    comboBoxInWebApp.SelectedIndex = 0;
+                if (comboBoxInWebAppContentDBSource.Items.Count > 0)
+                    comboBoxInWebAppContentDBSource.SelectedIndex = 0;
+                if (comboBoxInWebAppContentDBDest.Items.Count > 0)
+                    comboBoxInWebAppContentDBDest.SelectedIndex = 0;
+            }
+        }
+
+        private void initTabCrossWebApp()
+        {
+            string strSPWebAppId = string.Empty;
+            string strSelectedValueWebAppCrossWebAppSource = SPSiteAdmin2013.Properties.Settings.Default.CrossWebAppSource;
+            string strSelectedValueWebAppCrossWebAppDest = SPSiteAdmin2013.Properties.Settings.Default.CrossWebAppDest;
+            string strSelectedValueCrossWebAppContentDBSource = SPSiteAdmin2013.Properties.Settings.Default.CrossWebAppContentDBSource;
+            string strSelectedValueCrossWebAppContentDBDest = SPSiteAdmin2013.Properties.Settings.Default.CrossWebAppContentDBDest;
+
+            comboBoxCrossWebAppSource.Items.Clear();
+            comboBoxCrossWebAppDest.Items.Clear();
+            foreach (SPWebApplication objSPWebApp in SPWebService.ContentService.WebApplications)
+            {
+                strSPWebAppId = objSPWebApp.Id.ToString();
+
+                comboBoxCrossWebAppSource.Items.Add(new KeyValuePair<string, string>(strSPWebAppId, objSPWebApp.Name));
+                comboBoxCrossWebAppDest.Items.Add(new KeyValuePair<string, string>(strSPWebAppId, objSPWebApp.Name));
+            }
+
+            comboBoxCrossWebAppSource.DisplayMember = "Value";
+            comboBoxCrossWebAppSource.ValueMember = "Key";
+            if (string.IsNullOrEmpty(strSelectedValueWebAppCrossWebAppSource) == false)
+            {
+                comboBoxCrossWebAppSource.SelectedIndex = GetComboBoxSelectedIndexByValue(comboBoxCrossWebAppSource, strSelectedValueWebAppCrossWebAppSource);
+                comboBoxCrossWebAppContentDBSource.SelectedIndex = GetComboBoxSelectedIndexByValue(comboBoxCrossWebAppContentDBSource, strSelectedValueCrossWebAppContentDBSource);
+            }
+            else
+            {
+                if (comboBoxCrossWebAppSource.Items.Count > 0)
+                    comboBoxCrossWebAppSource.SelectedIndex = 0;
+                if (comboBoxInWebAppContentDBSource.Items.Count > 0)
+                    comboBoxInWebAppContentDBSource.SelectedIndex = 0;
+            }
+
+            comboBoxCrossWebAppDest.DisplayMember = "Value";
+            comboBoxCrossWebAppDest.ValueMember = "Key";
+            if (string.IsNullOrEmpty(strSelectedValueWebAppCrossWebAppDest) == false)
+            {
+                comboBoxCrossWebAppDest.SelectedIndex = GetComboBoxSelectedIndexByValue(comboBoxCrossWebAppDest, strSelectedValueWebAppCrossWebAppDest);
+                comboBoxCrossWebAppContentDBDest.SelectedIndex = GetComboBoxSelectedIndexByValue(comboBoxCrossWebAppContentDBDest, strSelectedValueCrossWebAppContentDBDest);
+            }
+            else
+            {
+                if (comboBoxCrossWebAppDest.Items.Count > 0)
+                    comboBoxCrossWebAppDest.SelectedIndex = 0;
+                if (comboBoxInWebAppContentDBDest.Items.Count > 0)
+                    comboBoxInWebAppContentDBDest.SelectedIndex = 0;
+            }
+        }
+
+        private void initTabBackup()
+        {
+            string strSPWebAppId = string.Empty;
+            string strSelectedValueBackupWebApp = SPSiteAdmin2013.Properties.Settings.Default.WebAppBackup;
+
+            comboBoxBackupWebApp.Items.Clear();
+            foreach (SPWebApplication objSPWebApp in SPWebService.ContentService.WebApplications)
+            {
+                strSPWebAppId = objSPWebApp.Id.ToString();
+
+                comboBoxBackupWebApp.Items.Add(new KeyValuePair<string, string>(strSPWebAppId, objSPWebApp.Name));
+            }
+            comboBoxBackupWebApp.DisplayMember = "Value";
+            comboBoxBackupWebApp.ValueMember = "Key";
+            if (string.IsNullOrEmpty(strSelectedValueBackupWebApp) == false)
+            {
+                comboBoxBackupWebApp.SelectedIndex = GetComboBoxSelectedIndexByValue(comboBoxBackupWebApp, strSelectedValueBackupWebApp);
+            }
+            else
+            {
+                if (comboBoxBackupWebApp.Items.Count > 0)
+                    comboBoxBackupWebApp.SelectedIndex = 0;
+            }
+
+            if (string.IsNullOrEmpty(SPSiteAdmin2013.Properties.Settings.Default.BackupFolder) == false)
+            {
+                textBoxBackupFolder.Text = SPSiteAdmin2013.Properties.Settings.Default.BackupFolder;
+            }
+            else
+            {
+                textBoxBackupFolder.Text = Environment.CurrentDirectory;
+            }
+
+            checkBoxTimestampBackup.Checked = SPSiteAdmin2013.Properties.Settings.Default.TimestampBackup;
+        }
+
+        private void initTabRestore()
+        {
+            string strSPWebAppId = string.Empty;
+            string strSelectedValueRestoreWebApp = SPSiteAdmin2013.Properties.Settings.Default.WebAppRestore;
+
+            comboBoxRestoreWebApp.Items.Clear();
+            foreach (SPWebApplication objSPWebApp in SPWebService.ContentService.WebApplications)
+            {
+                strSPWebAppId = objSPWebApp.Id.ToString();
+
+                comboBoxRestoreWebApp.Items.Add(new KeyValuePair<string, string>(strSPWebAppId, objSPWebApp.Name));
+            }
+
+            if (dtRestore != null && dtRestore.Columns.Count > 0)
+            {
+                dtRestore.Rows.Clear();
+                dtRestore.Columns.Clear();
+            }
+            dtRestore.Columns.Add("Selected", typeof(bool));
+            dtRestore.Columns.Add("SiteName");
+            dtRestore.Columns.Add("SiteUrl");
+
+            dataGridViewRestoreSPSite.DataSource = dtRestore;
+            dataGridViewRestoreSPSite.Columns["SiteUrl"].Visible = false;
+            dataGridViewRestoreSPSite.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells;
+
+            comboBoxRestoreWebApp.DisplayMember = "Value";
+            comboBoxRestoreWebApp.ValueMember = "Key";
+
+            if (string.IsNullOrEmpty(strSelectedValueRestoreWebApp) == false)
+            {
+                comboBoxRestoreWebApp.SelectedIndex = GetComboBoxSelectedIndexByValue(comboBoxRestoreWebApp, strSelectedValueRestoreWebApp);
+            }
+            else
+            {
+                if (comboBoxRestoreWebApp.Items.Count > 0)
+                    comboBoxRestoreWebApp.SelectedIndex = 0;
+            }
+
+            if (string.IsNullOrEmpty(SPSiteAdmin2013.Properties.Settings.Default.RestoreFolder) == false)
+            {
+                textBoxRestoreFolder.Text = SPSiteAdmin2013.Properties.Settings.Default.RestoreFolder;
+            }
+            else
+            {
+                textBoxRestoreFolder.Text = Environment.CurrentDirectory;
+            }
+
+            PopulateComboBoxFilesRestore(comboBoxFilesRestore);
+        }
+
+        private void initTabCreate()
+        {
+            string strSPWebAppId = string.Empty;
+            string strSelectedValueWebAppCreate = SPSiteAdmin2013.Properties.Settings.Default.WebAppCreate;
+            string strSelectedValueContentDBCreate = SPSiteAdmin2013.Properties.Settings.Default.ContentDBCreate;
+
+            comboBoxRestoreWebApp.Items.Clear();
+            foreach (SPWebApplication objSPWebApp in SPWebService.ContentService.WebApplications)
+            {
+                strSPWebAppId = objSPWebApp.Id.ToString();
+
+                comboBoxWebAppCreate.Items.Add(new KeyValuePair<string, string>(strSPWebAppId, objSPWebApp.Name));
+            }
+
+            comboBoxWebAppCreate.DisplayMember = "Value";
+            comboBoxWebAppCreate.ValueMember = "Key";
+            if (string.IsNullOrEmpty(strSelectedValueWebAppCreate) == false)
+            {
+                comboBoxWebAppCreate.SelectedIndex = GetComboBoxSelectedIndexByValue(comboBoxWebAppCreate, strSelectedValueWebAppCreate);
+                comboBoxContentDBCreate.SelectedIndex = GetComboBoxSelectedIndexByValue(comboBoxContentDBCreate, strSelectedValueContentDBCreate);
+            }
+            else
+            {
+                if (comboBoxWebAppCreate.Items.Count > 0)
+                    comboBoxWebAppCreate.SelectedIndex = 0;
+                if (comboBoxContentDBCreate.Items.Count > 0)
+                    comboBoxContentDBCreate.SelectedIndex = 0;
+            }
+
+            Dictionary<string, string> dictSiteTemplate = new Dictionary<string, string>();
+            dictSiteTemplate.Add("STS#0", "Team Site");
+            dictSiteTemplate.Add("STS#1", "Blank Site");
+            comboBoxTemplateCreate.DataSource = new BindingSource(dictSiteTemplate, null);
+            comboBoxTemplateCreate.DisplayMember = "Value";
+            comboBoxTemplateCreate.ValueMember = "Key";
+            comboBoxTemplateCreate.SelectedIndex = 0;
+        }
+
         private void Form1_Load(object sender, EventArgs e)
         {
+            Cursor objCurrentCursor = Cursor.Current;
             try
             {
-                RefreshStatus();
+                Cursor.Current = Cursors.WaitCursor;
+                labelTempDbName.Text = string.Format("Temporary database name: {0}", _SPContentDatabase_Tmp);
+                initTabInWebApp();
             }
             catch (Exception ex)
+            {
+                MessageBox.Show(string.Format(@"Exception message: {0}", ex.Message));
+                throw;
+            }
+            finally
+            {
+                Cursor.Current = objCurrentCursor;
+            }
+        }
+
+        private void PopulateContentDBs(Guid guidWebApp, ComboBox comboBoxContentDB)
+        {
+            if (comboBoxContentDB.Items.Count > 0)
+                comboBoxContentDB.Items.Clear();
+
+            SPWebApplication objSPWebApp = SPWebService.ContentService.WebApplications[guidWebApp];
+            float decSizeWebApp = 0;
+            int iSiteCount = 0;
+            foreach (SPContentDatabase objSPContentDatabase in objSPWebApp.ContentDatabases)
+            {
+                if (string.IsNullOrEmpty(_SP_SQL_Instance_Name))
+                {
+                    _SP_SQL_Instance_Name = objSPContentDatabase.Server;
+                }
+                comboBoxContentDB.Items.Add(new KeyValuePair<string, string>(objSPContentDatabase.Id.ToString(), objSPContentDatabase.Name));
+                decSizeWebApp += objSPContentDatabase.DiskSizeRequired;
+                iSiteCount += objSPContentDatabase.CurrentSiteCount;
+            }
+            textBoxInWebAppSourceWebAppSize.Text = (decSizeWebApp / (1024 * 1024 * 1024)).ToString("#.00");
+            textBoxInWebAppSourceSiteCount.Text = iSiteCount.ToString();
+
+            comboBoxContentDB.DisplayMember = "Value";
+            comboBoxContentDB.ValueMember = "Key";
+        }
+
+        private void PopulateManagedPath(Guid guidWebApp, ComboBox comboBoxManagedPath)
+        {
+            if (comboBoxManagedPath.Items.Count > 0)
+                comboBoxManagedPath.Items.Clear();
+
+            SPWebApplication objSPWebApp = SPWebService.ContentService.WebApplications[guidWebApp];
+            foreach (SPPrefix prefix in objSPWebApp.Prefixes)
+            {
+                if (prefix.PrefixType == SPPrefixType.WildcardInclusion || prefix.PrefixType == SPPrefixType.Wildcard)
+                {
+                    comboBoxManagedPath.Items.Add(new KeyValuePair<string, string>(prefix.Name, prefix.Name));
+                }
+            }
+
+            comboBoxManagedPath.DisplayMember = "Value";
+            comboBoxManagedPath.ValueMember = "Key";
+        }
+
+        private void PopulateSPSites(Guid guidWebApp, Guid guidContentDB, ListBox listBoxSPSite)
+        {
+            if (listBoxSPSite.Items.Count > 0)
+                listBoxSPSite.Items.Clear();
+
+            SPWebApplication objSPWebApp = SPWebService.ContentService.WebApplications[guidWebApp];
+            SPContentDatabase objSPContentDatabase = objSPWebApp.ContentDatabases[guidContentDB];
+            foreach (SPSite objSPSite in objSPContentDatabase.Sites)
+            {
+                try
+                {
+                    if (objSPSite.Url.EndsWith(@"Office_Viewing_Service_Cache"))
+                        continue;
+
+                    listBoxSPSite.Items.Add(new KeyValuePair<string, string>(objSPSite.Url, string.Format("{0}, {1}", objSPSite.RootWeb.Title, objSPSite.Url)));
+                }
+                catch (Exception ex)
+                {
+                    // MessageBox.Show(string.Format("PopulateSPSites(), ex.Message={0}, ex.StackTrace={1}", ex.Message, ex.StackTrace));
+                    // MessageBox.Show(string.Format("PopulateSPSites(), ex.Message={0}", ex.Message));
+                    //throw;
+                }
+            }
+
+            listBoxSPSite.DisplayMember = "Value";
+            listBoxSPSite.ValueMember = "Key";
+
+            listBoxSPSite.ClearSelected();
+
+            textBoxPSScript.Text = string.Empty;
+            _dictPSScriptInWebApp.Clear();
+            _dictPSScriptCrossWebApp.Clear();
+        }
+
+        private void PopulateSPSites(Guid guidWebApp, ListBox listBoxSPSite)
+        {
+            if (listBoxSPSite.Items.Count > 0)
+                listBoxSPSite.Items.Clear();
+
+            SPWebApplication objSPWebApp = SPWebService.ContentService.WebApplications[guidWebApp];
+            foreach (SPSite objSPSite in objSPWebApp.Sites)
+            {
+                if (objSPSite.Url.EndsWith(@"Office_Viewing_Service_Cache"))
+                    continue;
+
+                listBoxSPSite.Items.Add(new KeyValuePair<string, string>(objSPSite.Url, string.Format("{0}, {1}", objSPSite.RootWeb.Title, objSPSite.Url)));
+            }
+
+            listBoxSPSite.DisplayMember = "Value";
+            listBoxSPSite.ValueMember = "Key";
+
+            listBoxSPSite.ClearSelected();
+
+            textBoxPSScript.Text = string.Empty;
+            _dictPSScriptBackup.Clear();
+        }
+
+        private void PopulateSPSites(Guid guidWebApp, DataGridView dataGridViewSPSite)
+        {
+            if (dataGridViewSPSite.Columns.Count > 0)
+                dataGridViewSPSite.Columns.Clear();
+            if (dtRestore.Rows.Count > 0)
+                dtRestore.Rows.Clear();
+
+            SPWebApplication objSPWebApp = SPWebService.ContentService.WebApplications[guidWebApp];
+            foreach (SPSite objSPSite in objSPWebApp.Sites)
+            {
+                if (objSPSite.Url.EndsWith(@"Office_Viewing_Service_Cache"))
+                    continue;
+
+                DataRow newRow = dtRestore.NewRow();
+                newRow["Selected"] = 0;
+                newRow["SiteName"] = objSPSite.RootWeb.Title;
+                newRow["SiteUrl"] = objSPSite.Url;
+
+                dtRestore.Rows.Add(newRow);
+            }
+            dataGridViewRestoreSPSite.DataSource = null;
+            dataGridViewRestoreSPSite.DataSource = dtRestore;
+
+            textBoxPSScript.Text = string.Empty;
+            _dictPSScriptRestore.Clear();
+        }
+
+        private void ResetStatusListBoxSPSite(ComboBox objComboBoxContentDBSource, ComboBox objComboBoxContentDBDest, ListBox objListBoxMoveSPSiteSource, ListBox objListBoxMoveSPSiteDest)
+        {
+            bool boolEnable = false;
+
+            if (objComboBoxContentDBSource.SelectedItem == null || objComboBoxContentDBDest.SelectedItem == null)
             {
                 ;
             }
-        }
-
-        private int PerformanceGetRowNumber()
-        {
-            int iRowNumber = int.MinValue;
-            int.TryParse(textBoxPerformanceRowNumber.Text, out iRowNumber);
-
-            return iRowNumber;
-        }
-
-        private void PerformanceRefreshRowCount()
-        {
-            using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
+            else if (((KeyValuePair<string, string>)objComboBoxContentDBSource.SelectedItem).Key == ((KeyValuePair<string, string>)objComboBoxContentDBDest.SelectedItem).Key
+                    && comboBoxInWebAppManagedPath.Items.Count == 1)
             {
-                using (SPWeb objSPWeb = objSPSite.OpenWeb())
+                ;
+            }
+            else
+            {
+                boolEnable = true;
+            }
+
+            objListBoxMoveSPSiteSource.Enabled = boolEnable;
+            objListBoxMoveSPSiteDest.Enabled = boolEnable;
+        }
+
+        private void buttonInWebAppReset_Click(object sender, EventArgs e)
+        {
+            buttonClearPSScript_Click(null, null);
+            comboBoxInWebAppContentDBSource_SelectedIndexChanged(null, null);
+            comboBoxInWebAppContentDBDest_SelectedIndexChanged(null, null);
+        }
+
+        private void comboBoxInWebApp_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            string strDestWebAppGUID = ((KeyValuePair<string, string>)comboBoxInWebApp.SelectedItem).Key;
+
+            PopulateContentDBs(new Guid(strDestWebAppGUID), comboBoxInWebAppContentDBSource);
+            PopulateContentDBs(new Guid(strDestWebAppGUID), comboBoxInWebAppContentDBDest);
+
+            SPSiteAdmin2013.Properties.Settings.Default.InWebApp = strDestWebAppGUID;
+            SPSiteAdmin2013.Properties.Settings.Default.Save();
+
+            if (comboBoxInWebAppContentDBSource.Items.Count > 0)
+            {
+                comboBoxInWebAppContentDBSource.SelectedIndex = 0;
+                comboBoxInWebAppContentDBDest.SelectedIndex = 0;
+            }
+
+            PopulateManagedPath(new Guid(strDestWebAppGUID), comboBoxInWebAppManagedPath);
+
+            if (comboBoxInWebAppManagedPath.Items.Count > 0)
+            {
+                comboBoxInWebAppManagedPath.SelectedIndex = 0;
+            }
+        }
+
+        private bool SetLabelInWebAppPrompt(string strSiteUrl)
+        {
+            bool boolReturn = false;
+
+            labelInWebAppPrompt.Visible = false;
+
+            if (comboBoxInWebAppContentDBSource.Items.Count < 1)
+                return boolReturn;
+            if (comboBoxInWebAppContentDBDest.Items.Count < 1)
+                return boolReturn;
+            if (comboBoxInWebAppContentDBSource.SelectedItem == null)
+                return boolReturn;
+            if (comboBoxInWebAppContentDBDest.SelectedItem == null)
+                return boolReturn;
+
+            //string strKeyContentDBSource = ((KeyValuePair<string, string>)comboBoxInWebAppContentDBSource.SelectedItem).Key;
+            //string strKeyContentDBDest = ((KeyValuePair<string, string>)comboBoxInWebAppContentDBDest.SelectedItem).Key;
+
+            if (comboBoxInWebAppContentDBSource.Text.Equals(comboBoxInWebAppContentDBDest.Text, StringComparison.InvariantCultureIgnoreCase))
+            {
+                if (comboBoxInWebAppManagedPath.Items.Count == 1)
                 {
-                    SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
-                    if (objSPListPerformanceTest != null)
-                    {
-                        int iRowCount = objSPListPerformanceTest.ItemCount;
-                        textBoxPerformanceRowCount.Text = iRowCount.ToString();
-                    }
-                    else
-                    {
-                        textBoxPerformanceRowCount.Text = @"N/A";
-                    }
+                    boolReturn = true;
                 }
             }
-        }
 
-        private int GetStartID()
-        {
-            int iReturnID = -1;
-            using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
+            if (string.IsNullOrEmpty(strSiteUrl) == false && boolReturn == false)
             {
-                using (SPWeb objSPWeb = objSPSite.OpenWeb())
+                string strManagedPathSource = GetSitePathName(strSiteUrl);
+                string strManagedpathDest = ((KeyValuePair<string, string>)comboBoxInWebAppManagedPath.SelectedItem).Value;
+                if (strManagedpathDest.Equals(strManagedPathSource, StringComparison.InvariantCultureIgnoreCase))
                 {
-                    SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
-                    if (objSPListPerformanceTest != null)
-                    {
-                        iReturnID = objSPListPerformanceTest.Items[0].ID;
-                    }
+                    boolReturn = true;
                 }
             }
 
-            return iReturnID;
+            labelInWebAppPrompt.Visible = boolReturn;
+            return boolReturn;
         }
 
-        private void PerformanceCalculate(DateTime objStart, DateTime objEnd, int iRowNumber)
+        private void SetLabelCrossWebAppPrompt()
         {
-            TimeSpan objTimeSpan = new TimeSpan(objEnd.Ticks - objStart.Ticks);
-            string strTmp = string.Empty;
-            string strBatch = string.Empty;
-            if (checkBoxBatch.Checked)
-            {
-                strBatch = "(batch)";
-            }
-            if (objTimeSpan.TotalMilliseconds > 0)
-            {
-                double doublePerformance = (double)(iRowNumber * 1000) / objTimeSpan.TotalMilliseconds;
-                strTmp = string.Format(@"StartTime:{0}, EndTime:{1}, RowNumber:{2}, Performance:{3} (rows/second), TimeSpan:{4} seconds", objStart.ToLongTimeString(), objEnd.ToLongTimeString(), iRowNumber, doublePerformance.ToString("0.00"), objTimeSpan.TotalSeconds.ToString("0.00"));
-                writeLog(strBatch + strTmp);
-                writeLog(string.Empty);
-            }
-        }
+            labelCrossWebAppPrompt.Visible = false;
 
-        public void RefreshStatus()
-        {
-            bool boolExists = false;
-
-            try
-            {
-                Cursor.Current = Cursors.WaitCursor;
-
-                if (textBoxSiteURL.Text.Contains(@"{local}"))
-                {
-                    textBoxSiteURL.Text = textBoxSiteURL.Text.Replace(@"{local}", Environment.MachineName);
-                }
-                using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
-                {
-                    using (SPWeb objSPWeb = objSPSite.OpenWeb())
-                    {
-                        SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
-                        if (objSPListPerformanceTest != null)
-                            boolExists = true;
-                        else
-                            boolExists = false;
-
-                        checkBoxPerformanceExist.Checked = boolExists;
-                        if (boolExists)
-                            textBoxPerformanceRowCount.Text = objSPListPerformanceTest.ItemCount.ToString();
-                        else
-                            textBoxPerformanceRowCount.Text = @"0";
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-
-                throw;
-            }
-            finally
-            {
-                Cursor.Current = Cursors.Arrow;
-            }
-        }
-
-        private void buttonPerformanceRecreate_Click(object sender, EventArgs e)
-        {
-            try
-            {
-                Cursor.Current = Cursors.WaitCursor;
-
-                using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
-                {
-                    using (SPWeb objSPWeb = objSPSite.OpenWeb())
-                    {
-                        SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
-                        if (objSPListPerformanceTest != null)
-                        {
-                            writeLog(@"Deleting existing list (" + _ListNamePerformanceTest + ") begin...");
-                            
-                            objSPListPerformanceTest.Delete();
-                            writeLog(@"...completed.");
-                            writeLog(string.Empty);
-                        }
-                        writeLog(@"Creating list (" + _ListNamePerformanceTest + ") begin...");
-                        
-                        Guid newGuid = objSPWeb.Lists.Add(_ListNamePerformanceTest, _ListNamePerformanceTest, SPListTemplateType.GenericList);
-                        SPList objSPList = objSPWeb.Lists[newGuid];
-                        objSPList.Fields.Add(_FieldName_1, SPFieldType.Text, false);
-                        objSPList.Fields.Add(_FieldName_2, SPFieldType.Text, false);
-                        objSPList.Fields.Add(_FieldName_3, SPFieldType.Text, false);
-                        objSPList.Fields.Add(_FieldName_4, SPFieldType.Text, false);
-                        objSPList.Fields.Add(_FieldName_5, SPFieldType.Text, false);
-                        objSPList.EnableAttachments = false;
-                        objSPList.OnQuickLaunch = true;
-                        objSPList.Update();
-
-                        SPView view = objSPList.DefaultView;
-                        view.ViewFields.Add(_FieldName_1);
-                        view.ViewFields.Add("ID");
-                        //view.ViewFields.Add("Created");
-                        //view.ViewFields.Add("Modified");
-                        view.RowLimit = 2000;
-                        view.Aggregations = "<FieldRef Name='ID' Type='COUNT'/>";
-                        view.AggregationsStatus = "On";
-                        view.Update();
-
-                        writeLog(@"...completed.");
-                        writeLog(string.Empty);
-                    }
-                }
-
-                RefreshStatus();
-            }
-            catch (Exception ex)
-            {
-
-                throw;
-            }
-            finally
-            {
-                Cursor.Current = Cursors.Arrow;
-            }
-        }
-
-        public int insertSPListItemBatch(int iThreadId)
-        {
-            int iRowNumber = PerformanceGetRowNumber();
-            if (iRowNumber < 0)
-            {
-                writeLog("Cannot insert zero items. Exit.");
-                return 0;
-            }
-
-            string strValue = "insert-" + iThreadId.ToString() + @"-" + DateTime.Now.ToLongTimeString();
-            StringBuilder query = new StringBuilder();
-
-            try
-            {
-                Cursor.Current = Cursors.WaitCursor;
-
-                using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
-                {
-                    using (SPWeb objSPWeb = objSPSite.OpenWeb())
-                    {
-                        SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
-                        Guid strListGUID = objSPListPerformanceTest.ID;
-
-                        for (int i = 0; i < iRowNumber; i++)
-                        {
-                            //string strValue = "insert(" + DateTime.Now.ToLongTimeString() + @"):: " + i.ToString();
-                            query.AppendFormat("<Method ID=\"{0}\">" +
-                                    "<SetList>{1}</SetList>" +
-                                    "<SetVar Name=\"ID\">New</SetVar>" +
-                                    "<SetVar Name=\"Cmd\">Save</SetVar>" +
-                                    "<SetVar Name=\"{3}Title\">{2}</SetVar>" +
-                                    "<SetVar Name=\"{3}TextField1\">{2}</SetVar>" +
-                                    "<SetVar Name=\"{3}TextField2\">{2}</SetVar>" +
-                                    "<SetVar Name=\"{3}TextField3\">{2}</SetVar>" +
-                                    "<SetVar Name=\"{3}TextField4\">{2}</SetVar>" +
-                                    "<SetVar Name=\"{3}TextField5\">{2}</SetVar>" +
-                                 "</Method>", i, strListGUID, strValue, _FieldPrefix);
-                        }
-                        objSPWeb.ProcessBatchData(string.Format("<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
-                            "<ows:Batch OnError=\"Return\">{0}</ows:Batch>", query.ToString()));
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-
-                throw;
-            }
-
-            return iRowNumber;
-        }
-
-        public void insertSPListItemSingle(int iThreadId)
-        {
-            int iRowNumber = PerformanceGetRowNumber();
-            string strValue = "insert-" + iThreadId.ToString() + @"-" + DateTime.Now.ToLongTimeString();
-
-            using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
-            {
-                using (SPWeb objSPWeb = objSPSite.OpenWeb())
-                {
-                    SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
-                    //SPListItemCollection objSPListItemCollection = objSPListPerformanceTest.Items;
-
-                    SPListItem objSPListItem = null;
-                    for (int i = 0; i < iRowNumber; i++)
-                    {
-                        objSPListItem = objSPListPerformanceTest.AddItem();
-                        objSPListItem[SPBuiltInFieldId.Title] = strValue;
-                        objSPListItem[_FieldName_1] = strValue;
-                        objSPListItem[_FieldName_2] = strValue;
-                        objSPListItem[_FieldName_3] = strValue;
-                        objSPListItem[_FieldName_4] = strValue;
-                        objSPListItem[_FieldName_5] = strValue;
-                        //objSPListItem.SystemUpdate(false);
-                        objSPListItem.Update();
-
-                        //if (i % 100 == 0)
-                        //{
-                        //    writeLogDot();
-                        //}
-                    }
-                }
-            }
-        }
-
-        private void buttonPerformanceInsert_Click(object sender, EventArgs e)
-        {
-            if (false == checkBoxPerformanceExist.Checked) return;
-
-            int iThreadNumber = int.Parse(maskedTextBoxThreadNumber.Text);
-            bool boolBatch = checkBoxBatch.Checked;
-
-            //textBoxPerformanceLog.Text = string.Empty;
-            int iRowNumber = PerformanceGetRowNumber();
-            if (iRowNumber < 0)
-            {
-                writeLog("Cannot insert zero items. Exit.");
+            if (comboBoxCrossWebAppContentDBSource.Items.Count < 1)
                 return;
+            if (comboBoxCrossWebAppContentDBDest.Items.Count < 1)
+                return;
+            if (comboBoxCrossWebAppContentDBSource.SelectedItem == null)
+                return;
+            if (comboBoxCrossWebAppContentDBDest.SelectedItem == null)
+                return;
+
+            string strKeyContentDBSource = ((KeyValuePair<string, string>)comboBoxCrossWebAppContentDBSource.SelectedItem).Key;
+            string strKeyContentDBDest = ((KeyValuePair<string, string>)comboBoxCrossWebAppContentDBDest.SelectedItem).Key;
+
+            if (strKeyContentDBSource.Equals(strKeyContentDBDest, StringComparison.InvariantCultureIgnoreCase))
+                labelCrossWebAppPrompt.Visible = true;
+        }
+
+        private void comboBoxInWebAppContentDBSource_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            string strKeyWebApp = ((KeyValuePair<string, string>)comboBoxInWebApp.SelectedItem).Key;
+            string strKeyContentDB = ((KeyValuePair<string, string>)comboBoxInWebAppContentDBSource.SelectedItem).Key;
+
+            PopulateSPSites(new Guid(strKeyWebApp),
+                new Guid(strKeyContentDB),
+                listBoxInWebAppSPSiteSource);
+
+            SPWebApplication objSPWebApp = SPWebService.ContentService.WebApplications[new Guid(strKeyWebApp)];
+            SPContentDatabase objSPContentDatabase = objSPWebApp.ContentDatabases[new Guid(strKeyContentDB)];
+            textBoxInWebAppSourceDBSize.Text = (((float)objSPContentDatabase.DiskSizeRequired) / (1024 * 1024 * 1024)).ToString("#.00");
+            textBoxInWebAppSourceDBSiteCount.Text = objSPContentDatabase.CurrentSiteCount.ToString();
+
+            SPSiteAdmin2013.Properties.Settings.Default.InWebAppContentDBSource = strKeyContentDB;
+            SPSiteAdmin2013.Properties.Settings.Default.Save();
+
+            ResetStatusListBoxSPSite(comboBoxInWebAppContentDBSource, comboBoxInWebAppContentDBDest, listBoxInWebAppSPSiteSource, listBoxInWebAppSPSiteDest);
+            SetLabelInWebAppPrompt(string.Empty);
+        }
+
+        private void comboBoxInWebAppContentDBDest_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            string strKeyWebApp = ((KeyValuePair<string, string>)comboBoxInWebApp.SelectedItem).Key;
+            string strKeyContentDB = ((KeyValuePair<string, string>)comboBoxInWebAppContentDBDest.SelectedItem).Key;
+
+            PopulateSPSites(new Guid(strKeyWebApp),
+                new Guid(strKeyContentDB),
+                listBoxInWebAppSPSiteDest);
+
+            SPWebApplication objSPWebApp = SPWebService.ContentService.WebApplications[new Guid(strKeyWebApp)];
+            SPContentDatabase objSPContentDatabase = objSPWebApp.ContentDatabases[new Guid(strKeyContentDB)];
+            textBoxInWebAppDestDBSize.Text = (((float)objSPContentDatabase.DiskSizeRequired)/(1024*1024*1024)).ToString("#.00");
+            textBoxInWebAppDestDBSiteCount.Text = objSPContentDatabase.CurrentSiteCount.ToString();
+
+            SPSiteAdmin2013.Properties.Settings.Default.InWebAppContentDBDest = strKeyContentDB;
+            SPSiteAdmin2013.Properties.Settings.Default.Save();
+
+            ResetStatusListBoxSPSite(comboBoxInWebAppContentDBSource, comboBoxInWebAppContentDBDest, listBoxInWebAppSPSiteSource, listBoxInWebAppSPSiteDest);
+            SetLabelInWebAppPrompt(string.Empty);
+        }
+
+        private string getWebAppUrlByGUID(string strWebAppGUID)
+        {
+            string strWebAppUrl = string.Empty;
+            SPWebApplication objSourceSPWebApp = SPWebService.ContentService.WebApplications[new Guid(strWebAppGUID)];
+            foreach (SPAlternateUrl altUrl in objSourceSPWebApp.AlternateUrls)
+            {
+                if (altUrl.UrlZone == SPUrlZone.Default)
+                {
+                    strWebAppUrl = altUrl.Uri.ToString();
+                    break;
+                }
             }
 
-            _PerformanceStartTime = DateTime.Now;
-            writeLog(string.Format(@"Insert {0} rows, begin at {1}), in {2} threads...",
-                iRowNumber * iThreadNumber, _PerformanceStartTime.ToLongTimeString(), iThreadNumber));
+            return strWebAppUrl;
+        }
 
-            try
+        private void RefreshPSScriptTextBoxInWebApp()
+        {
+            string strLine = string.Empty;
+            textBoxPSScript.Text = string.Empty;
+
+            string strWebAppGUID = ((KeyValuePair<string, string>)comboBoxInWebApp.SelectedItem).Key;
+            string strWebAppUrl = getWebAppUrlByGUID(strWebAppGUID);
+            string strSiteUrlDest = string.Empty;
+
+            foreach (string strSiteUrlSource in _dictPSScriptInWebApp.Keys)
             {
-                Cursor.Current = Cursors.WaitCursor;
-                buttonPerformanceInsert.Enabled = false;
-
-                AForge.Parallel.For(0, iThreadNumber, delegate(int i)
+                // Move-SPSite http://sharepoint/sites/moveme -DestinationDatabase WSS_Content2 
+                if (radioButtonInWebAppMove.Checked)
                 {
-                    if (boolBatch)
+                    if (comboBoxInWebAppContentDBSource.Text.Equals(comboBoxInWebAppContentDBDest.Text, StringComparison.InvariantCultureIgnoreCase) == false)
                     {
-                        insertSPListItemBatch(i);
+                        strLine = string.Format(_PSTemplate_SPSiteMove, strSiteUrlSource, comboBoxInWebAppContentDBDest.Text);
+                        textBoxPSScript.Text += strLine + Environment.NewLine;
                     }
                     else
                     {
-                        insertSPListItemSingle(i);
+                        string strManagedPathSource = GetSitePathName(strSiteUrlSource);
+                        string strManagedpathDest = ((KeyValuePair<string, string>)comboBoxInWebAppManagedPath.SelectedItem).Value;
+                        strSiteUrlDest = strSiteUrlSource.Replace(strManagedPathSource, strManagedpathDest);
+                        string strContentDB = ((KeyValuePair<string, string>)comboBoxInWebAppContentDBDest.SelectedItem).Value;
+
+                        changeSiteManagedPath(strWebAppUrl, strContentDB, strSiteUrlSource, strSiteUrlDest);
                     }
-                });
+                }
+                else
+                {
+                    strSiteUrlDest = strSiteUrlSource + "New";
 
-                iRowNumber *= iThreadNumber;
+                    strLine = string.Format(_PSTemplate_SPContentDatabaseMount, _SPContentDatabase_Tmp, _SP_SQL_Instance_Name, strWebAppUrl);
+                    textBoxPSScript.Text += strLine + Environment.NewLine;
 
-                PerformanceRefreshRowCount();
-                _PerformanceEndTime = DateTime.Now;
-                writeLog(string.Format(@"Insert completed at {0}, {1} rows get inserted.", _PerformanceEndTime.ToLongTimeString(), iRowNumber));
-                PerformanceCalculate(_PerformanceStartTime, _PerformanceEndTime, iRowNumber);
+                    strLine = string.Format(_PSTemplate_SPSiteCopy, strSiteUrlSource, comboBoxInWebAppContentDBDest.Text, strSiteUrlDest);
+                    textBoxPSScript.Text += strLine + Environment.NewLine;
 
-                RefreshStatus();
-            }
-            catch (Exception ex)
-            {
+                    strLine = string.Format(_PSTemplate_SPSiteMove, strSiteUrlDest, comboBoxInWebAppContentDBSource.Text);
+                    textBoxPSScript.Text += strLine + Environment.NewLine;
 
-                throw;
-            }
-            finally
-            {
-                buttonPerformanceInsert.Enabled = true;
-                Cursor.Current = Cursors.Arrow;
+                    strLine = string.Format(_PSTemplate_SPContentDatabaseDismount, _SPContentDatabase_Tmp);
+                    textBoxPSScript.Text += strLine + Environment.NewLine;
+                }
             }
         }
 
-        public int retrieveSPListItemSingle(int iThreadId)
+        private void listBoxInWebApp_DragDrop(object sender, DragEventArgs e, ListBox objListBoxSource, ListBox objListBoxDest)
         {
-            int iBatchCount = PerformanceGetRowNumber();
-            if (iBatchCount <= 0)
-            {
-                writeLog("Cannot retrieve zero items. Exit.");
-                return -1;
-            }
-
-            int iPositionStart = iBatchCount * iThreadId;
-            int iPositionEnd = iBatchCount * (iThreadId + 1);
-            int iMethodId = 0;
+            string strKey_SiteUrl = string.Empty;
             string strValue = string.Empty;
+            ListBox.SelectedObjectCollection objItems = objListBoxSource.SelectedItems;
+            int iCurrent = int.MinValue;
+            bool boolChangeFlag = false;
 
-            using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
+            if (objListBoxSource.SelectedItem == null)
+                return;
+
+            strKey_SiteUrl = ((KeyValuePair<string, string>)objListBoxSource.SelectedItem).Key;
+            strValue = ((KeyValuePair<string, string>)objListBoxSource.SelectedItem).Value;
+            if (objListBoxSource == listBoxInWebAppSPSiteSource)
             {
-                using (SPWeb objSPWeb = objSPSite.OpenWeb())
+                if (_dictPSScriptInWebApp.ContainsKey(strKey_SiteUrl) == false)
                 {
-                    SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
-                    SPListItemCollection objSPListItemCollection = objSPListPerformanceTest.Items;
-                    SPListItem objSPListItem = null;
-                    if (iPositionEnd > objSPListPerformanceTest.ItemCount)
-                        iPositionEnd = objSPListPerformanceTest.ItemCount;
-                    if (iPositionEnd < iPositionStart)
-                    {
-                        return 0;
-                    }
-
-                    for (int i = iPositionStart; i < iPositionEnd; i++)
-                    {
-                        iMethodId++;
-                        objSPListItem = objSPListItemCollection[i];
-
-                        strValue = objSPListItem[_FieldName_1].ToString();
-                        strValue += objSPListItem[_FieldName_2].ToString();
-                        strValue += objSPListItem[_FieldName_3].ToString();
-                        strValue += objSPListItem[_FieldName_4].ToString();
-                        strValue += objSPListItem[_FieldName_5].ToString();
-                    }
+                    _dictPSScriptInWebApp.Add(strKey_SiteUrl, strValue);
+                    boolChangeFlag = true;
+                }
+            }
+            else
+            {
+                if (_dictPSScriptInWebApp.ContainsKey(strKey_SiteUrl))
+                {
+                    _dictPSScriptInWebApp.Remove(strKey_SiteUrl);
+                    boolChangeFlag = true;
                 }
             }
 
-            return iMethodId;
+            if (boolChangeFlag)
+            {
+                bool boolReturn = SetLabelInWebAppPrompt(strKey_SiteUrl);
+                if (boolReturn)
+                {
+                    _dictPSScriptInWebApp.Remove(strKey_SiteUrl);
+                    return;
+                }
+
+                foreach (var item in objItems)
+                {
+                    iCurrent = objListBoxDest.Items.Add(item);
+                }
+                while (objListBoxSource.SelectedItems.Count > 0)
+                {
+                    objListBoxSource.Items.Remove(objListBoxSource.SelectedItems[0]);
+                }
+                RefreshPSScriptTextBoxInWebApp();
+            }
         }
 
-        private void buttonPerformanceRetrieve_Click(object sender, EventArgs e)
+        private void renameSiteUrl(string strSiteUrlSource, string strSiteUrlDest)
         {
-            if (false == checkBoxPerformanceExist.Checked) return;
+            string strLine = string.Empty;
 
-            int iThreadNumber = int.Parse(maskedTextBoxThreadNumber.Text);
-            bool boolBatch = checkBoxBatch.Checked;
+            //$site = Get-SPSite http://portal.odfbdemo.com/sites/oldpath 
+            //$uri = New-Object System.Uri("http://portal.odfbdemo.com/sites/shinynewpath")
+            //$site.Rename($uri)
+            //((Get-SPSite http://portal.odfbdemo.com/sites/shinynewpath).contentdatabase).RefreshSitesInConfigurationDatabase
 
-            //textBoxPerformanceLog.Text = string.Empty;
-            int iRowNumber = PerformanceGetRowNumber();
-            if (iRowNumber <= 0)
-            {
-                writeLog("Cannot retrieve zero items. Exit.");
-                return;
-            }
+            strLine = string.Format(_PSTemplate_GetSPSite, strSiteUrlSource);
+            textBoxPSScript.Text += strLine + Environment.NewLine;
 
-            _PerformanceStartTime = DateTime.Now;
-            writeLog(@"Retrieve (single mode only) " + textBoxPerformanceRowNumber.Text + " rows begin(" + _PerformanceStartTime.ToLongTimeString() + @")...");
+            textBoxPSScript.Text += _PSTemplate_SPSite_RecycleBin_DeleteAll + Environment.NewLine;
+
+            strLine = string.Format(_PSTemplate_SPSiteRename, strSiteUrlDest);
+            textBoxPSScript.Text += strLine + Environment.NewLine;
+
+            textBoxPSScript.Text += _PSTemplate_SPSiteDispose + Environment.NewLine;
+
+            strLine = string.Format(_PSTemplate_GetSPSite, strSiteUrlDest);
+            textBoxPSScript.Text += strLine + Environment.NewLine;
+
+            textBoxPSScript.Text += _PSTemplate_RefreshSitesInConfigurationDatabase + Environment.NewLine;
+
+            textBoxPSScript.Text += _PSTemplate_SPSiteDispose + Environment.NewLine;
+        }
+
+        private void changeSiteManagedPath(string strWebAppUrl, string strContentDatabaseName, string strSiteUrlSource, string strSiteUrlDest)
+        {
+            string strLine = string.Empty;
+
+            // Mount-SPContentDatabase -AssignNewDatabaseId -Name "TempContentDatabaseSource" -DatabaseServer "sp2013dbDEV" -WebApplication "http://SPTest2013DEV.unitingcare.local"
+            strLine = string.Format(_PSTemplate_SPContentDatabaseMount, _SPContentDatabase_Tmp, _SP_SQL_Instance_Name, strWebAppUrl);
+            textBoxPSScript.Text += strLine + Environment.NewLine;
+
+            //Copy-SPSite http://$webAppSource$envSuffix/sites/$siteNameSource -DestinationDatabase $databaseNameTmp -TargetUrl http://$webAppSource$envSuffix/sites/$siteNameDest
+            strLine = string.Format(_PSTemplate_SPSiteCopy, strSiteUrlSource, _SPContentDatabase_Tmp, strSiteUrlDest);
+            textBoxPSScript.Text += strLine + Environment.NewLine;
+
+            strLine = string.Format(_PSTemplate_SPSiteRemove, strSiteUrlSource);
+            textBoxPSScript.Text += strLine + Environment.NewLine;
+
+            strLine = string.Format(_PSTemplate_SPSiteDeletionTimerJob, strWebAppUrl);
+            textBoxPSScript.Text += strLine + Environment.NewLine;
             
-            try
-            {
-                Cursor.Current = Cursors.WaitCursor;
-                buttonPerformanceRetrieve.Enabled = false;
+            //Move-SPSite http://$webAppSource$envSuffix/sites/$siteNameDest -DestinationDatabase $databaseNameSource -Confirm:$false
+            strLine = string.Format(_PSTemplate_SPSiteMove, strSiteUrlDest, strContentDatabaseName);
+            textBoxPSScript.Text += strLine + Environment.NewLine;
 
-                AForge.Parallel.For(0, iThreadNumber, delegate(int i)
-                {
-                    retrieveSPListItemSingle(i);
-                });
+            strLine = string.Format(_PSTemplate_SPSiteDeletionTimerJob, strWebAppUrl);
+            textBoxPSScript.Text += strLine + Environment.NewLine;
 
-                iRowNumber *= iThreadNumber;
-
-                PerformanceRefreshRowCount();
-                _PerformanceEndTime = DateTime.Now;
-                writeLog(string.Format(@"Retrieve completed at {0}, {1} rows get retrieved.", _PerformanceEndTime.ToLongTimeString(), iRowNumber));
-                PerformanceCalculate(_PerformanceStartTime, _PerformanceEndTime, iRowNumber);
-            }
-            catch (Exception ex)
-            {
-
-                throw;
-            }
-            finally
-            {
-                buttonPerformanceRetrieve.Enabled = true;
-                Cursor.Current = Cursors.Arrow;
-            }
+            //Dismount-SPContentDatabase - Identity $databaseNameTmp - Confirm:$false
+            strLine = string.Format(_PSTemplate_SPContentDatabaseDismount, _SPContentDatabase_Tmp);
+            textBoxPSScript.Text += strLine + Environment.NewLine;
         }
-
-        public int updateSPListItemBatch(int iThreadId, int iStartID)
+        
+        private void RefreshPSScriptTextBoxCrossWebApp()
         {
-            int iBatchCount = PerformanceGetRowNumber();
-            if (iBatchCount <= 0)
+            //string strSiteUrl = string.Empty;
+            string strFileFullPath = string.Empty;
+            string strLine = string.Empty;
+            textBoxPSScript.Text = string.Empty;
+
+            string strManagedPathDest = ((KeyValuePair<string, string>)comboBoxCrossWebAppManagedPath.SelectedItem).Key;
+            string strContentDB = ((KeyValuePair<string, string>)comboBoxCrossWebAppContentDBDest.SelectedItem).Value;
+
+            string strSourceWebAppGUID = ((KeyValuePair<string, string>)comboBoxCrossWebAppSource.SelectedItem).Key;
+            string strWebAppUrlSource = getWebAppUrlByGUID(strSourceWebAppGUID);
+
+            string strDestWebAppGUID = ((KeyValuePair<string, string>)comboBoxCrossWebAppDest.SelectedItem).Key;
+            string strWebAppUrlDest = getWebAppUrlByGUID(strDestWebAppGUID);
+
+            string strSiteUrlTmp = string.Empty;
+            string strSiteUrlDest = string.Empty;
+            string strManagedPathSource = string.Empty;
+
+            //for (int i = 0; i < listBoxCrossWebAppSPSiteSource.SelectedItems.Count; i++)
+            foreach (string strSourceSiteUrl in _dictPSScriptCrossWebApp.Keys)
             {
-                writeLog("Cannot update zero items. Exit.");
-                return -1;
-            }
+                strSiteUrlDest = strSourceSiteUrl.Replace(strWebAppUrlSource, strWebAppUrlDest);
 
-            int iPositionStart = iBatchCount * iThreadId;
-            int iPositionEnd = iBatchCount * (iThreadId + 1);
-            int iMethodId = 0;
-            string strValue = "update-" + iThreadId.ToString() + @"-" + DateTime.Now.ToLongTimeString();
-
-            StringBuilder sbDelete = new StringBuilder();
-            sbDelete.Append("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Batch>");
-
-            using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
-            {
-                using (SPWeb objSPWeb = objSPSite.OpenWeb())
+                if (radioButtonCrossWebAppMove.Checked)
                 {
-                    SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
-                    SPListItemCollection objSPListItemCollection = objSPListPerformanceTest.Items;
-                    string strListGUID = objSPListItemCollection.List.ID.ToString();
-                    if (iPositionEnd > objSPListPerformanceTest.ItemCount)
-                        iPositionEnd = objSPListPerformanceTest.ItemCount;
-                    if (iPositionEnd < iPositionStart)
-                    {
-                        return 0;
-                    }
+                    // Mount-SPContentDatabase -AssignNewDatabaseId -Name "TempContentDatabaseSource" -DatabaseServer "sp2013dbDEV" -WebApplication "http://SPTest2013DEV.unitingcare.local"
+                    strLine = string.Format(_PSTemplate_SPContentDatabaseMount, _SPContentDatabase_Tmp, _SP_SQL_Instance_Name, strWebAppUrlSource);
+                    textBoxPSScript.Text += strLine + Environment.NewLine;
 
-                    for (int i = iPositionStart; i < iPositionEnd; i++)
-                    {
-                        iMethodId++;
-                        sbDelete.AppendFormat("<Method ID=\"{0}\">" +
-                            "<SetList>{1}</SetList>" +
-                            "<SetVar Name=\"ID\">{2}</SetVar>" +
-                            "<SetVar Name=\"Cmd\">Update</SetVar>" +
-                            "<SetVar Name=\"{4}TextField1\">{3}</SetVar>" +
-                            "<SetVar Name=\"{4}TextField2\">{3}</SetVar>" +
-                            "<SetVar Name=\"{4}TextField3\">{3}</SetVar>" +
-                            "<SetVar Name=\"{4}TextField4\">{3}</SetVar>" +
-                            "<SetVar Name=\"{4}TextField5\">{3}</SetVar>" +
-                            "</Method>", iMethodId, strListGUID, iStartID + i, strValue, _FieldPrefix);
-                    }
+                    //Move-SPSite http://$webAppSource$envSuffix/sites/$siteNameDest -DestinationDatabase $databaseNameSource -Confirm:$false
+                    strLine = string.Format(_PSTemplate_SPSiteMove, strSourceSiteUrl, _SPContentDatabase_Tmp);
+                    textBoxPSScript.Text += strLine + Environment.NewLine;
 
-                    sbDelete.Append("</Batch>");
+                    strLine = string.Format(_PSTemplate_SPSiteDeletionTimerJob, strWebAppUrlSource);
+                    textBoxPSScript.Text += strLine + Environment.NewLine;
 
-                    try
-                    {
-                        objSPWeb.ProcessBatchData(sbDelete.ToString());
-                    }
-                    catch (Exception ex)
-                    {
-                        writeLog("updateSPListItemBatch, Delete failed: " + ex.Message);
-                        throw;
-                    }
+                    //Dismount-SPContentDatabase - Identity $databaseNameTmp - Confirm:$false
+                    strLine = string.Format(_PSTemplate_SPContentDatabaseDismount, _SPContentDatabase_Tmp);
+                    textBoxPSScript.Text += strLine + Environment.NewLine;
+
+                    // Mount-SPContentDatabase -AssignNewDatabaseId -Name "TempContentDatabaseSource" -DatabaseServer "sp2013dbDEV" -WebApplication "http://SPTest2013DEV.unitingcare.local"
+                    strLine = string.Format(_PSTemplate_SPContentDatabaseMount, _SPContentDatabase_Tmp, _SP_SQL_Instance_Name, strWebAppUrlDest);
+                    textBoxPSScript.Text += strLine + Environment.NewLine;
+
+                    //Move-SPSite http://$webAppSource$envSuffix/sites/$siteNameDest -DestinationDatabase $databaseNameSource -Confirm:$false
+                    strLine = string.Format(_PSTemplate_SPSiteMove, strSiteUrlDest, comboBoxCrossWebAppContentDBDest.Text);
+                    textBoxPSScript.Text += strLine + Environment.NewLine;
+
+                    strLine = string.Format(_PSTemplate_SPSiteDeletionTimerJob, strWebAppUrlDest);
+                    textBoxPSScript.Text += strLine + Environment.NewLine;
+
+                    //Dismount-SPContentDatabase - Identity $databaseNameTmp - Confirm:$false
+                    strLine = string.Format(_PSTemplate_SPContentDatabaseDismount, _SPContentDatabase_Tmp);
+                    textBoxPSScript.Text += strLine + Environment.NewLine;
+                }
+                else
+                {
+                    // Mount-SPContentDatabase -AssignNewDatabaseId -Name "TempContentDatabaseSource" -DatabaseServer "sp2013dbDEV" -WebApplication "http://SPTest2013DEV.unitingcare.local"
+                    strLine = string.Format(_PSTemplate_SPContentDatabaseMount, _SPContentDatabase_Tmp, _SP_SQL_Instance_Name, strWebAppUrlSource);
+                    textBoxPSScript.Text += strLine + Environment.NewLine;
+
+                    //Copy-SPSite http://$webAppSource$envSuffix/sites/$siteNameSource -DestinationDatabase $databaseNameTmp -TargetUrl http://$webAppSource$envSuffix/sites/$siteNameDest
+                    strLine = string.Format(_PSTemplate_SPSiteCopy, strSourceSiteUrl, _SPContentDatabase_Tmp, strSourceSiteUrl + "New");
+                    textBoxPSScript.Text += strLine + Environment.NewLine;
+
+                    //Dismount-SPContentDatabase - Identity $databaseNameTmp - Confirm:$false
+                    strLine = string.Format(_PSTemplate_SPContentDatabaseDismount, _SPContentDatabase_Tmp);
+                    textBoxPSScript.Text += strLine + Environment.NewLine;
+
+                    //Mount-SPContentDatabase -AssignNewDatabaseId -Name "TempContentDatabaseSource" -DatabaseServer "sp2013dbDEV" -WebApplication "http://SPTest2013DEV.unitingcare.local"
+                    strLine = string.Format(_PSTemplate_SPContentDatabaseMount, _SPContentDatabase_Tmp, _SP_SQL_Instance_Name, strWebAppUrlDest);
+                    textBoxPSScript.Text += strLine + Environment.NewLine;
+
+                    //Move-SPSite http://$webAppSource$envSuffix/sites/$siteNameDest -DestinationDatabase $databaseNameSource -Confirm:$false
+                    strLine = string.Format(_PSTemplate_SPSiteMove, strSiteUrlDest + "New", comboBoxCrossWebAppContentDBDest.Text);
+                    textBoxPSScript.Text += strLine + Environment.NewLine;
+
+                    strLine = string.Format(_PSTemplate_SPSiteDeletionTimerJob, strWebAppUrlDest);
+                    textBoxPSScript.Text += strLine + Environment.NewLine;
+
+                    //Dismount-SPContentDatabase - Identity $databaseNameTmp - Confirm:$false
+                    strLine = string.Format(_PSTemplate_SPContentDatabaseDismount, _SPContentDatabase_Tmp);
+                    textBoxPSScript.Text += strLine + Environment.NewLine;
+
+                    renameSiteUrl(strSiteUrlDest + "New", strSiteUrlDest);
+                }
+                strManagedPathSource = GetSitePathName(strSourceSiteUrl);
+                if (strManagedPathSource.Equals(strManagedPathDest) != true)
+                {
+                    strSiteUrlTmp = strSiteUrlDest;
+                    strSiteUrlDest = strSiteUrlDest.Replace(strManagedPathSource, strManagedPathDest);
+
+                    changeSiteManagedPath(strWebAppUrlDest, strContentDB, strSiteUrlTmp, strSiteUrlDest);
                 }
             }
-
-            return iMethodId;
         }
 
-        public int updateSPListItemSingle(int iThreadId, int iStartID)
+        private void listBoxCrossWebApp_DragDrop(object sender, DragEventArgs e, ListBox objListBoxSource, ListBox objListBoxDest)
         {
-            int iBatchCount = PerformanceGetRowNumber();
-            if (iBatchCount <= 0)
-            {
-                writeLog("Cannot update zero items. Exit.");
-                return -1;
-            }
+            string strKey = string.Empty;
+            string strValue = string.Empty;
+            ListBox.SelectedObjectCollection objItems = objListBoxSource.SelectedItems;
+            int iCurrent = int.MinValue;
+            bool boolChangeFlag = false;
 
-            int iPositionStart = iBatchCount * iThreadId;
-            int iPositionEnd = iBatchCount * (iThreadId + 1);
-            int iMethodId = 0;
-            string strValue = "update-" + iThreadId.ToString() + @"-" + DateTime.Now.ToLongTimeString();
-
-            using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
-            {
-                using (SPWeb objSPWeb = objSPSite.OpenWeb())
-                {
-                    SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
-                    SPListItemCollection objSPListItemCollection = objSPListPerformanceTest.Items;
-                    SPListItem objSPListItem = null;
-                    if (iPositionEnd > objSPListPerformanceTest.ItemCount)
-                        iPositionEnd = objSPListPerformanceTest.ItemCount;
-                    if (iPositionEnd < iPositionStart)
-                    {
-                        return 0;
-                    }
-
-                    for (int i = iPositionStart; i < iPositionEnd; i++)
-                    {
-                        iMethodId++;
-                        objSPListItem = objSPListPerformanceTest.GetItemById(iStartID + i);
-                        objSPListItem[_FieldName_1] = strValue;
-                        objSPListItem[_FieldName_2] = strValue;
-                        objSPListItem[_FieldName_3] = strValue;
-                        objSPListItem[_FieldName_4] = strValue;
-                        objSPListItem[_FieldName_5] = strValue;
-                        objSPListItem.SystemUpdate(false);
-
-                        //if (i % 100 == 0)
-                        //{
-                        //    writeLogDot();
-                        //}
-                    }
-                }
-            }
-
-            return iMethodId;
-        }
-
-        private void buttonPerformanceUpdate_Click(object sender, EventArgs e)
-        {
-            if (false == checkBoxPerformanceExist.Checked) return;
-
-            //textBoxPerformanceLog.Text = string.Empty;
-            int iRowNumber = PerformanceGetRowNumber();
-            if (iRowNumber <= 0)
-            {
-                writeLog("No data found. Update exit.");
+            if (objListBoxSource.SelectedItem == null)
                 return;
-            }
 
-            int iThreadNumber = int.Parse(maskedTextBoxThreadNumber.Text);
-            bool boolBatch = checkBoxBatch.Checked;
-
-            _PerformanceStartTime = DateTime.Now;
-            writeLog(string.Format(@"Update {0} rows, begin at {1}), in {2} threads...",
-                iRowNumber * iThreadNumber, _PerformanceStartTime.ToLongTimeString(), iThreadNumber));
-
-            try
+            strKey = ((KeyValuePair<string, string>)objListBoxSource.SelectedItem).Key;
+            strValue = ((KeyValuePair<string, string>)objListBoxSource.SelectedItem).Value;
+            if (objListBoxSource == listBoxCrossWebAppSPSiteSource)
             {
-                Cursor.Current = Cursors.WaitCursor;
-                buttonPerformanceUpdate.Enabled = false;
-
-                int iStartID = GetStartID();
-
-                AForge.Parallel.For(0, iThreadNumber, delegate(int i)
+                if (_dictPSScriptCrossWebApp.ContainsKey(strKey) == false)
                 {
-                    if (boolBatch)
-                    {
-                        updateSPListItemBatch(i, iStartID);
-                    }
-                    else
-                    {
-                        updateSPListItemSingle(i, iStartID);
-                    }
-                });
-
-                iRowNumber *= iThreadNumber;
-
-                PerformanceRefreshRowCount();
-                _PerformanceEndTime = DateTime.Now;
-                writeLog(string.Format(@"Update completed at {0}, {1} rows get updated.", _PerformanceEndTime.ToLongTimeString(), iRowNumber));
-                PerformanceCalculate(_PerformanceStartTime, _PerformanceEndTime, iRowNumber);
+                    _dictPSScriptCrossWebApp.Add(strKey, strValue);
+                    boolChangeFlag = true;
+                }
             }
-            catch (Exception ex)
+            else
             {
-
-                throw;
-            }
-            finally
-            {
-                buttonPerformanceUpdate.Enabled = true;
-                Cursor.Current = Cursors.Arrow;
-            }
-        }
-
-        public int deleteSPListItemBatch(int iThreadId, int iStartID)
-        {
-            int iBatchCount = PerformanceGetRowNumber();
-            if (iBatchCount <= 0)
-            {
-                writeLog("Cannot delete zero items. Exit.");
-                return -1;
-            }
-
-            int iPositionStart = iBatchCount * iThreadId;
-            int iPositionEnd = iBatchCount * (iThreadId + 1);
-            int iMethodId = 0;
-
-            StringBuilder sbDelete = new StringBuilder();
-            sbDelete.Append("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Batch>");
-
-            using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
-            {
-                using (SPWeb objSPWeb = objSPSite.OpenWeb())
+                if (_dictPSScriptCrossWebApp.ContainsKey(strKey))
                 {
-                    SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
-                    SPListItemCollection objSPListItemCollection = objSPListPerformanceTest.Items;
-                    string strListGUID = objSPListItemCollection.List.ID.ToString();
-
-                    if (iPositionEnd > objSPListPerformanceTest.ItemCount)
-                        iPositionEnd = objSPListPerformanceTest.ItemCount;
-                    if (iPositionEnd < iPositionStart)
-                    {
-                        return 0;
-                    }
-
-                    try
-                    {
-                        for (int i = iPositionStart; i < iPositionEnd; i++)
-                        {
-                            iMethodId++;
-                            sbDelete.Append("<Method>");
-                            sbDelete.Append("<SetList Scope=\"Request\">" + strListGUID + "</SetList>");
-                            sbDelete.Append("<SetVar Name=\"ID\">" + Convert.ToString(iStartID + i) + "</SetVar>");
-                            sbDelete.Append("<SetVar Name=\"Cmd\">Delete</SetVar>");
-                            sbDelete.Append("</Method>");
-                        }
-
-                        sbDelete.Append("</Batch>");
-                    }
-                    catch (Exception)
-                    {
-                        
-                        throw;
-                    }
-
-                    try
-                    {
-                        objSPWeb.ProcessBatchData(sbDelete.ToString());
-                    }
-                    catch (Exception ex)
-                    {
-                        writeLog("deleteSPListItemBatch, Delete failed: " + ex.Message);
-                        throw;
-                    }
+                    _dictPSScriptCrossWebApp.Remove(strKey);
+                    boolChangeFlag = true;
                 }
             }
 
-            return iMethodId;
+            if (boolChangeFlag)
+            {
+                foreach (var item in objItems)
+                {
+                    iCurrent = objListBoxDest.Items.Add(item);
+                }
+                while (objListBoxSource.SelectedItems.Count > 0)
+                {
+                    objListBoxSource.Items.Remove(objListBoxSource.SelectedItems[0]);
+                }
+                RefreshPSScriptTextBoxCrossWebApp();
+            }
         }
 
-        public int deleteSPListItemSingle(int iThreadId, int iStartID)
+        private void listBoxInWebAppSPSiteDest_DragDrop(object sender, DragEventArgs e)
         {
-            int iBatchCount = PerformanceGetRowNumber();
-            if (iBatchCount <= 0)
+            listBoxInWebApp_DragDrop(sender, e, listBoxInWebAppSPSiteSource, listBoxInWebAppSPSiteDest);
+        }
+
+        private void listBoxInWebAppSPSiteSource_DragDrop(object sender, DragEventArgs e)
+        {
+            listBoxInWebApp_DragDrop(sender, e, listBoxInWebAppSPSiteDest, listBoxInWebAppSPSiteSource);
+        }
+
+        private void listBoxInWebAppSPSiteSource_MouseDown(object sender, MouseEventArgs e)
+        {
+            if (listBoxInWebAppSPSiteSource.SelectedItem == null)
+                return;
+            listBoxInWebAppSPSiteSource.DoDragDrop(listBoxInWebAppSPSiteSource.SelectedItem, DragDropEffects.Move);
+        }
+
+        private void listBoxInWebAppSPSiteDest_MouseDown(object sender, MouseEventArgs e)
+        {
+            if (listBoxInWebAppSPSiteDest.SelectedItem == null) return;
+            listBoxInWebAppSPSiteDest.DoDragDrop(listBoxInWebAppSPSiteDest.SelectedItem, DragDropEffects.Move);
+        }
+
+        private void listBoxInWebAppSPSiteSource_DragOver(object sender, DragEventArgs e)
+        {
+            e.Effect = DragDropEffects.Move;
+        }
+
+        private void listBoxInWebAppSPSiteDest_DragOver(object sender, DragEventArgs e)
+        {
+            e.Effect = DragDropEffects.Move;
+        }
+
+        private void buttonRun_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void buttonInWebAppAll_Click(object sender, EventArgs e)
+        {
+            for (int i = listBoxInWebAppSPSiteSource.Items.Count - 1; i >= 0; i--)
             {
-                writeLog("Cannot delete zero items. Exit.");
-                return -1;
+                listBoxInWebAppSPSiteSource.SelectedIndex = i;
+
+                listBoxInWebApp_DragDrop(null, null, listBoxInWebAppSPSiteSource, listBoxInWebAppSPSiteDest);
+            }
+        }
+
+        private string GetFolderPath()
+        {
+            string strFolderPath = string.Empty;
+
+            folderBrowserDialog1.ShowNewFolderButton = true;
+            strFolderPath = textBoxBackupFolder.Text.Trim();
+            if (string.IsNullOrEmpty(strFolderPath) == false)
+            {
+                if (System.IO.Directory.Exists(strFolderPath))
+                {
+                    folderBrowserDialog1.SelectedPath = strFolderPath;
+                }
+            }
+            DialogResult objDialogResult = folderBrowserDialog1.ShowDialog();
+            if (objDialogResult == System.Windows.Forms.DialogResult.OK)
+            {
+                strFolderPath = folderBrowserDialog1.SelectedPath;
             }
 
-            int iPositionStart = iBatchCount * iThreadId;
-            int iPositionEnd = iBatchCount * (iThreadId + 1);
-            int iMethodId = 0;
+            return strFolderPath;
+        }
 
-            using (SPSite objSPSite = new SPSite(textBoxSiteURL.Text.Trim()))
+        private void buttonBrowseBackup_Click(object sender, EventArgs e)
+        {
+            string strFolderPath = string.Empty;
+            strFolderPath = GetFolderPath();
+            if (string.IsNullOrEmpty(strFolderPath) == false)
             {
-                using (SPWeb objSPWeb = objSPSite.OpenWeb())
-                {
-                    SPList objSPListPerformanceTest = objSPWeb.Lists.TryGetList(_ListNamePerformanceTest);
-                    //SPListItemCollection objSPListItemCollection = objSPListPerformanceTest.Items;
-                    if (iPositionEnd > objSPListPerformanceTest.ItemCount)
-                        iPositionEnd = objSPListPerformanceTest.ItemCount;
-                    if (iPositionEnd < iPositionStart)
-                    {
-                        return 0;
-                    }
+                SPSiteAdmin2013.Properties.Settings.Default.BackupFolder = strFolderPath;
+                SPSiteAdmin2013.Properties.Settings.Default.Save();
+                textBoxBackupFolder.Text = strFolderPath;
+            }
+        }
 
-                    try
+        private void comboBoxBackupWebApp_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            string strKeyWebApp = ((KeyValuePair<string, string>)comboBoxBackupWebApp.SelectedItem).Key;
+
+            PopulateSPSites(new Guid(strKeyWebApp),
+                listBoxBackupSPSite);
+
+            SPSiteAdmin2013.Properties.Settings.Default.WebAppBackup = strKeyWebApp;
+            SPSiteAdmin2013.Properties.Settings.Default.Save();
+        }
+
+        private string GetFileName(string strSiteUrl)
+        {
+            string strFileName = string.Empty;
+            int iPos = 0;
+
+            iPos = strSiteUrl.IndexOf(@"//");
+            strFileName = strSiteUrl.Substring(iPos + 2);
+            strFileName = strFileName.Replace(@"/", @".");
+            strFileName = strFileName.Replace(@":", @".");
+            if (checkBoxTimestampBackup.Checked)
+            {
+                strFileName += @"." + DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            }
+            strFileName += ".bak";
+
+            return strFileName;
+        }
+
+        private string GetSitePathName(string strSiteUrl)
+        {
+            string strSitePathName = string.Empty;
+            int iPosFirst = int.MinValue;
+            int iPosSecond = int.MinValue;
+
+            using (SPSite site = new SPSite(strSiteUrl))
+            {
+                using (SPWeb web = site.OpenWeb())
+                {
+                    iPosFirst = web.ServerRelativeUrl.IndexOf('/');
+                    if (iPosFirst >= 0)
                     {
-                        for (int i = iPositionStart; i < iPositionEnd; i++)
+                        iPosSecond = web.ServerRelativeUrl.IndexOf('/', iPosFirst + 1);
+                        if (iPosSecond > 0)
                         {
-                            iMethodId++;
-                            objSPListPerformanceTest.GetItemById(iStartID + i).Delete();
+                            strSitePathName = web.ServerRelativeUrl.Substring(iPosFirst + 1, iPosSecond - iPosFirst - 1);
                         }
-                    }
-                    catch (Exception)
-                    {
-                        
-                        throw;
                     }
                 }
             }
-
-            return iMethodId;
+            return strSitePathName;
         }
 
-        private void buttonPerformanceDelete_Click(object sender, EventArgs e)
+        private void textBoxFolderBackup_TextChanged(object sender, EventArgs e)
         {
-            int iRowNumber = PerformanceGetRowNumber();
-            if (false == checkBoxPerformanceExist.Checked) return;
+            RefreshPSScriptTextBoxBackup();
+        }
 
-            int iThreadNumber = int.Parse(maskedTextBoxThreadNumber.Text);
-            bool boolBatch = checkBoxBatch.Checked;
+        private void RefreshPSScriptTextBoxBackup()
+        {
+            string strKey = string.Empty;
+            string strLine = string.Empty;
+            string strFileFullPath = string.Empty;
+            textBoxPSScript.Text = string.Empty;
 
-            //textBoxPerformanceLog.Text = string.Empty;
-
-            _PerformanceStartTime = DateTime.Now;
-            writeLog(string.Format(@"Delete {0} rows, begin at {1}), in {2} threads...",
-                iRowNumber * iThreadNumber, _PerformanceStartTime.ToLongTimeString(), iThreadNumber));
-
-            try
+            for (int i = 0; i < listBoxBackupSPSite.SelectedItems.Count; i++)
             {
-                Cursor.Current = Cursors.WaitCursor;
-                buttonPerformanceDelete.Enabled = false;
+                strKey = ((KeyValuePair<string, string>)listBoxBackupSPSite.SelectedItems[i]).Key;
+                strFileFullPath = GetFileName(strKey);
+                strLine = string.Format(_PSTemplate_SPSiteBackup, strKey, textBoxBackupFolder.Text, strFileFullPath);
+                textBoxPSScript.Text += strLine + Environment.NewLine;
+            }
+        }
 
-                int iStartID = GetStartID();
+        private void listBoxBackupSPSite_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            RefreshPSScriptTextBoxBackup();
+        }
 
-                AForge.Parallel.For(0, iThreadNumber, delegate(int i)
+        private void buttonSelectAll_Click(object sender, EventArgs e)
+        {
+            listBoxBackupSPSite.SelectedItems.Clear();
+            for (int i = listBoxBackupSPSite.Items.Count - 1; i >= 0; i--)
+            {
+                listBoxBackupSPSite.SelectedItems.Add(listBoxBackupSPSite.Items[i]);
+            }
+            RefreshPSScriptTextBoxBackup();
+        }
+
+        private void dataGridViewRestoreSPSite_CellContentClick(object sender, DataGridViewCellEventArgs e)
+        {
+            DataGridViewCheckBoxCell ch1 = new DataGridViewCheckBoxCell();
+            ch1 = (DataGridViewCheckBoxCell)dataGridViewRestoreSPSite.Rows[dataGridViewRestoreSPSite.CurrentRow.Index].Cells[0];
+
+            if (ch1.Value == null)
+                ch1.Value = false;
+            switch (ch1.Value.ToString())
+            {
+                case "True":
+                    ch1.Value = false;
+                    break;
+                case "False":
+                    ch1.Value = true;
+                    break;
+            }
+            RefreshPSScriptTextBoxRestore();
+            //MessageBox.Show(ch1.Value.ToString());
+        }
+
+        private void comboBoxRestoreWebApp_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            string strKeyWebApp = ((KeyValuePair<string, string>)comboBoxRestoreWebApp.SelectedItem).Key;
+
+            PopulateSPSites(new Guid(strKeyWebApp), dataGridViewRestoreSPSite);
+
+            SPSiteAdmin2013.Properties.Settings.Default.WebAppRestore = strKeyWebApp;
+            SPSiteAdmin2013.Properties.Settings.Default.Save();
+
+            RefreshPSScriptTextBoxRestore();
+        }
+
+        private void buttonBrowseRestore_Click(object sender, EventArgs e)
+        {
+            string strFolderName = string.Empty;
+
+            folderBrowserDialog1.ShowNewFolderButton = true;
+            strFolderName = textBoxRestoreFolder.Text.Trim();
+            if (string.IsNullOrEmpty(strFolderName) == false)
+            {
+                if (System.IO.Directory.Exists(strFolderName))
                 {
-                    if (boolBatch)
-                    {
-                        deleteSPListItemBatch(i, iStartID);
-                    }
-                    else
-                    {
-                        deleteSPListItemSingle(i, iStartID);
-                    }
-                });
-
-                iRowNumber *= iThreadNumber;
-
-                PerformanceRefreshRowCount();
-                _PerformanceEndTime = DateTime.Now;
-                writeLog(string.Format(@"Delete completed at {0}, {1} rows get deleted.", _PerformanceEndTime.ToLongTimeString(), iRowNumber));
-                PerformanceCalculate(_PerformanceStartTime, _PerformanceEndTime, iRowNumber);
-
-                RefreshStatus();
+                    folderBrowserDialog1.SelectedPath = strFolderName;
+                }
             }
-            catch (Exception ex)
+            DialogResult objDialogResult = folderBrowserDialog1.ShowDialog();
+            if (objDialogResult == System.Windows.Forms.DialogResult.OK)
             {
-
-                throw;
-            }
-            finally
-            {
-                buttonPerformanceDelete.Enabled = true;
-                Cursor.Current = Cursors.Arrow;
+                strFolderName = folderBrowserDialog1.SelectedPath;
+                SPSiteAdmin2013.Properties.Settings.Default.RestoreFolder = strFolderName;
+                SPSiteAdmin2013.Properties.Settings.Default.Save();
+                textBoxRestoreFolder.Text = strFolderName;
             }
         }
 
-        private void buttonPerformanceAll_Click(object sender, EventArgs e)
+        private void textBoxFolderRestore_TextChanged(object sender, EventArgs e)
         {
-            if (false == checkBoxPerformanceExist.Checked) return;
+            PopulateComboBoxFilesRestore(comboBoxFilesRestore);
+        }
 
-            buttonClearLog_Click(sender, e);
+        private void PopulateComboBoxFilesRestore(ComboBox objComboBox)
+        {
+            if (objComboBox.Items.Count > 0)
+                objComboBox.Items.Clear();
 
-            try
+            string targetDirectory = textBoxRestoreFolder.Text;
+            if (Directory.Exists(targetDirectory) == false)
+                return;
+
+            int iPos = targetDirectory.Length;
+            string[] fileEntries = Directory.GetFiles(targetDirectory, @"*.bak", SearchOption.TopDirectoryOnly);
+
+            foreach (string strEntry in fileEntries)
+                objComboBox.Items.Add(strEntry.Substring(iPos + 1));
+
+            if (objComboBox.Items.Count > 0)
+                objComboBox.SelectedIndex = 0;
+
+            if (objComboBox.SelectedItem == null)
+                dataGridViewRestoreSPSite.Enabled = false;
+            else
+                dataGridViewRestoreSPSite.Enabled = true;
+        }
+
+        private void RefreshPSScriptTextBoxRestore()
+        {
+            string strSiteUrl = string.Empty;
+            string strLine = string.Empty;
+            string strFileFullPath = string.Empty;
+            textBoxPSScript.Text = string.Empty;
+
+            for (int i = 0; i < dataGridViewRestoreSPSite.Rows.Count; i++)
             {
-                Cursor.Current = Cursors.WaitCursor;
+                DataGridViewCheckBoxCell ch1 = new DataGridViewCheckBoxCell();
+                ch1 = (DataGridViewCheckBoxCell)dataGridViewRestoreSPSite.Rows[i].Cells[0];
+                if (ch1.Value == null)
+                    ch1.Value = false;
 
-                buttonPerformanceInsert_Click(sender, e);
-                buttonPerformanceRetrieve_Click(sender, e);
-                buttonPerformanceUpdate_Click(sender, e);
-                buttonPerformanceDelete_Click(sender, e);
-            }
-            catch (Exception ex)
-            {
-
-                throw;
-            }
-            finally
-            {
-                Cursor.Current = Cursors.Arrow;
+                if ((bool)ch1.Value == true)
+                {
+                    strSiteUrl = (string)dataGridViewRestoreSPSite.Rows[i].Cells[2].Value;
+                    strFileFullPath = comboBoxFilesRestore.SelectedItem.ToString();
+                    //site url, folder, file
+                    strLine = string.Format(_PSTemplate_SPSiteRestore, strSiteUrl, textBoxRestoreFolder.Text, strFileFullPath);
+                    textBoxPSScript.Text += strLine + Environment.NewLine;
+                }
             }
         }
 
-        private void buttonClearLog_Click(object sender, EventArgs e)
+        private void comboBoxFilesRestore_SelectedIndexChanged(object sender, EventArgs e)
         {
-            textBoxPerformanceLog.Text = string.Empty;
+            RefreshPSScriptTextBoxRestore();
         }
 
-        private void textBoxSiteURL_TextChanged(object sender, EventArgs e)
+        private void comboBoxWebAppCreate_SelectedIndexChanged(object sender, EventArgs e)
         {
-            RefreshStatus();
+            string strKey = ((KeyValuePair<string, string>)comboBoxWebAppCreate.SelectedItem).Key;
+
+            PopulateContentDBs(new Guid(strKey),
+                comboBoxContentDBCreate);
+
+            SPSiteAdmin2013.Properties.Settings.Default.WebAppCreate = strKey;
+            SPSiteAdmin2013.Properties.Settings.Default.Save();
+
+            if (comboBoxContentDBCreate.Items.Count > 0)
+            {
+                comboBoxContentDBCreate.SelectedIndex = 0;
+            }
+
+            PopulateManagedPath(new Guid(strKey), comboBoxCreateManagedPath);
+
+            SPSiteAdmin2013.Properties.Settings.Default.CreateManagedPath = strKey;
+            SPSiteAdmin2013.Properties.Settings.Default.Save();
+
+            if (comboBoxCreateManagedPath.Items.Count > 0)
+            {
+                comboBoxCreateManagedPath.SelectedIndex = 0;
+            }
         }
 
-        private void checkBoxPerformanceExist_CheckedChanged(object sender, EventArgs e)
+        private void comboBoxContentDBCreate_SelectedIndexChanged(object sender, EventArgs e)
         {
-            bool boolExists = checkBoxPerformanceExist.Checked;
+            string strKeyWebApp = ((KeyValuePair<string, string>)comboBoxWebAppCreate.SelectedItem).Key;
+            string strKeyContentDB = ((KeyValuePair<string, string>)comboBoxContentDBCreate.SelectedItem).Key;
 
-            buttonPerformanceInsert.Enabled = boolExists;
-            buttonPerformanceDelete.Enabled = boolExists;
-            buttonPerformanceUpdate.Enabled = boolExists;
-            buttonPerformanceAll.Enabled = boolExists;
+            PopulateSPSites(new Guid(strKeyWebApp),
+                new Guid(strKeyContentDB),
+                listBoxSPSiteCreate);
+
+            SPSiteAdmin2013.Properties.Settings.Default.ContentDBCreate = strKeyContentDB;
+            SPSiteAdmin2013.Properties.Settings.Default.Save();
+
+            RefreshPSScriptTextBoxCreate();
+        }
+
+        private void buttonCreateRefresh_Click(object sender, EventArgs e)
+        {
+            string strKeyWebApp = ((KeyValuePair<string, string>)comboBoxWebAppCreate.SelectedItem).Key;
+            string strKeyContentDB = ((KeyValuePair<string, string>)comboBoxContentDBCreate.SelectedItem).Key;
+
+            PopulateSPSites(new Guid(strKeyWebApp),
+                new Guid(strKeyContentDB),
+                listBoxSPSiteCreate);
+        }
+
+        private void RefreshPSScriptTextBoxCreate()
+        {
+            string strSitePathName = textBoxCreatePath.Text.Trim();
+            string strSiteName = textBoxCreateName.Text.Trim();
+
+            if (comboBoxTemplateCreate.SelectedItem == null)
+                return;
+
+            if (string.IsNullOrEmpty(strSitePathName) || string.IsNullOrEmpty(strSiteName))
+                return;
+
+            string strKeyWebAppGUID = ((KeyValuePair<string, string>)comboBoxWebAppCreate.SelectedItem).Key;
+            string strWebAppUrl = getWebAppUrlByGUID(strKeyWebAppGUID);
+
+            string strManagedPath = ((KeyValuePair<string, string>)comboBoxCreateManagedPath.SelectedItem).Key;
+            string strContentDB = ((KeyValuePair<string, string>)comboBoxContentDBCreate.SelectedItem).Value;
+
+            string strSiteFullPath = string.Format(@"{0}{1}/{2}", strWebAppUrl, strManagedPath, strSitePathName);
+            string strSiteTemplate = ((KeyValuePair<string, string>)comboBoxTemplateCreate.SelectedItem).Key;
+
+            string strSiteDescription = textBoxCreateDescription.Text.Trim();
+            string strSiteCollectionOwnerLogin = string.Format(@"{0}\{1}", Environment.UserDomainName, Environment.UserName);
+
+            textBoxPSScript.Text = string.Empty;
+
+            // @"New-SPSite {0} -OwnerAlias ""{1}"" –Language 1033 -Name ""{2}"" -Template ""{3}"" -ContentDatabase {4} -Description {5}";
+            textBoxPSScript.Text = string.Format(_PSTemplate_SPSiteCreate, strSiteFullPath, strSiteCollectionOwnerLogin,
+                strSiteName, strSiteTemplate, strContentDB, strSiteDescription);
+        }
+
+        private void comboBoxManagedPathCreate_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            RefreshPSScriptTextBoxCreate();
+        }
+
+        private void textBoxCreatePath_TextChanged(object sender, EventArgs e)
+        {
+            RefreshPSScriptTextBoxCreate();
+        }
+
+        private void textBoxCreateName_TextChanged(object sender, EventArgs e)
+        {
+            RefreshPSScriptTextBoxCreate();
+        }
+
+        private void comboBoxTemplateCreate_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            RefreshPSScriptTextBoxCreate();
+        }
+
+        private void textBoxCreateDescription_TextChanged(object sender, EventArgs e)
+        {
+            RefreshPSScriptTextBoxCreate();
+        }
+
+        private void buttonClearPSScript_Click(object sender, EventArgs e)
+        {
+            textBoxPSScript.Text = string.Empty;
+        }
+
+        private void checkBoxTimestampBackup_CheckedChanged(object sender, EventArgs e)
+        {
+            SPSiteAdmin2013.Properties.Settings.Default.TimestampBackup = checkBoxTimestampBackup.Checked;
+        }
+
+        private void buttonRestoreSelectAll_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void comboBoxCrossWebAppSource_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            string strKey = ((KeyValuePair<string, string>)comboBoxCrossWebAppSource.SelectedItem).Key;
+
+            PopulateContentDBs(new Guid(strKey), comboBoxCrossWebAppContentDBSource);
+
+            SPSiteAdmin2013.Properties.Settings.Default.CrossWebAppSource = strKey;
+            SPSiteAdmin2013.Properties.Settings.Default.Save();
+
+            if (comboBoxInWebAppContentDBSource.Items.Count > 0)
+            {
+                comboBoxInWebAppContentDBSource.SelectedIndex = 0;
+                comboBoxInWebAppContentDBDest.SelectedIndex = 0;
+            }
+        }
+
+        private void comboBoxCrossWebAppDest_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            string strDestWebAppGUID = ((KeyValuePair<string, string>)comboBoxCrossWebAppDest.SelectedItem).Key;
+
+            PopulateContentDBs(new Guid(strDestWebAppGUID), comboBoxCrossWebAppContentDBDest);
+
+            SPSiteAdmin2013.Properties.Settings.Default.CrossWebAppDest = strDestWebAppGUID;
+            SPSiteAdmin2013.Properties.Settings.Default.Save();
+
+            if (comboBoxCrossWebAppContentDBDest.Items.Count > 0)
+            {
+                comboBoxCrossWebAppContentDBDest.SelectedIndex = 0;
+            }
+
+            PopulateManagedPath(new Guid(strDestWebAppGUID), comboBoxCrossWebAppManagedPath);
+
+            SPSiteAdmin2013.Properties.Settings.Default.CrossWebAppDest = strDestWebAppGUID;
+            SPSiteAdmin2013.Properties.Settings.Default.Save();
+
+            if (comboBoxCrossWebAppManagedPath.Items.Count > 0)
+            {
+                comboBoxCrossWebAppManagedPath.SelectedIndex = 0;
+            }
+        }
+
+        private void comboBoxCrossWebAppContentDBDest_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (comboBoxCrossWebAppDest.SelectedItem == null)
+                return;
+            if (comboBoxCrossWebAppContentDBDest.SelectedItem == null)
+                return;
+
+            string strKeyCrossWebAppDest = ((KeyValuePair<string, string>)comboBoxCrossWebAppDest.SelectedItem).Key;
+            string strKeyCrossWebAppContentDBDest = ((KeyValuePair<string, string>)comboBoxCrossWebAppContentDBDest.SelectedItem).Key;
+
+            PopulateSPSites(new Guid(strKeyCrossWebAppDest),
+                new Guid(strKeyCrossWebAppContentDBDest),
+                listBoxCrossWebAppSPSiteDest);
+
+            SPSiteAdmin2013.Properties.Settings.Default.CrossWebAppContentDBDest = strKeyCrossWebAppContentDBDest;
+            SPSiteAdmin2013.Properties.Settings.Default.Save();
+
+            ResetStatusListBoxSPSite(comboBoxCrossWebAppContentDBSource, comboBoxCrossWebAppContentDBDest, listBoxCrossWebAppSPSiteSource, listBoxCrossWebAppSPSiteDest);
+            SetLabelCrossWebAppPrompt();
+        }
+
+        private void comboBoxCrossWebAppContentDBSource_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (comboBoxCrossWebAppSource.SelectedItem == null)
+                return;
+            if (comboBoxCrossWebAppContentDBSource.SelectedItem == null)
+                return;
+
+            string strKeyCrossWebAppSource = ((KeyValuePair<string, string>)comboBoxCrossWebAppSource.SelectedItem).Key;
+            string strKeyCrossWebAppContentDBSource = ((KeyValuePair<string, string>)comboBoxCrossWebAppContentDBSource.SelectedItem).Key;
+
+            PopulateSPSites(new Guid(strKeyCrossWebAppSource),
+                new Guid(strKeyCrossWebAppContentDBSource),
+                listBoxCrossWebAppSPSiteSource);
+
+            SPSiteAdmin2013.Properties.Settings.Default.CrossWebAppContentDBSource = strKeyCrossWebAppContentDBSource;
+            SPSiteAdmin2013.Properties.Settings.Default.Save();
+
+            ResetStatusListBoxSPSite(comboBoxCrossWebAppContentDBSource, comboBoxCrossWebAppContentDBDest, listBoxCrossWebAppSPSiteSource, listBoxCrossWebAppSPSiteDest);
+            SetLabelCrossWebAppPrompt();
+        }
+
+        private void listBoxCrossWebAppSPSiteSource_DragDrop(object sender, DragEventArgs e)
+        {
+            listBoxCrossWebApp_DragDrop(sender, e, listBoxCrossWebAppSPSiteDest, listBoxCrossWebAppSPSiteSource);
+        }
+
+        private void listBoxCrossWebAppSPSiteSource_DragOver(object sender, DragEventArgs e)
+        {
+            e.Effect = DragDropEffects.Move;
+        }
+
+        private void listBoxCrossWebAppSPSiteSource_MouseDown(object sender, MouseEventArgs e)
+        {
+            if (listBoxCrossWebAppSPSiteSource.SelectedItem == null)
+                return;
+            listBoxCrossWebAppSPSiteSource.DoDragDrop(listBoxCrossWebAppSPSiteSource.SelectedItem, DragDropEffects.Move);
+        }
+
+        private void listBoxCrossWebAppSPSiteDest_DragDrop(object sender, DragEventArgs e)
+        {
+            listBoxCrossWebApp_DragDrop(sender, e, listBoxCrossWebAppSPSiteSource, listBoxCrossWebAppSPSiteDest);
+        }
+
+        private void listBoxCrossWebAppSPSiteDest_DragOver(object sender, DragEventArgs e)
+        {
+            e.Effect = DragDropEffects.Move;
+        }
+
+        private void listBoxCrossWebAppSPSiteDest_MouseDown(object sender, MouseEventArgs e)
+        {
+            if (listBoxCrossWebAppSPSiteDest.SelectedItem == null) return;
+            listBoxCrossWebAppSPSiteDest.DoDragDrop(listBoxCrossWebAppSPSiteDest.SelectedItem, DragDropEffects.Move);
+        }
+
+        private void buttonCrossWebAppReset_Click(object sender, EventArgs e)
+        {
+            buttonClearPSScript_Click(null, null);
+            comboBoxCrossWebAppContentDBSource_SelectedIndexChanged(null, null);
+            comboBoxCrossWebAppContentDBDest_SelectedIndexChanged(null, null);
+        }
+
+        private void buttonCrossWebAppAll_Click(object sender, EventArgs e)
+        {
+            for (int i = listBoxCrossWebAppSPSiteSource.Items.Count - 1; i >= 0; i--)
+            {
+                listBoxCrossWebAppSPSiteSource.SelectedIndex = i;
+
+                listBoxCrossWebApp_DragDrop(null, null, listBoxCrossWebAppSPSiteSource, listBoxCrossWebAppSPSiteDest);
+            }
         }
     }
 }
